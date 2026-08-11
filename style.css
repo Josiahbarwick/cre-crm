@@ -299,6 +299,13 @@ textarea{width:100%;resize:vertical;min-height:70px;}
 .money-chart-wrap{position:relative;margin-top:4px;}
 .money-chart-tooltip{position:absolute;top:2px;transform:translateX(-50%);background:var(--navy-950);color:#fff;font-size:11px;font-weight:600;padding:4px 9px;border-radius:6px;white-space:nowrap;pointer-events:none;z-index:2;box-shadow:var(--shadow);}
 
+/* News feed */
+.news-list{display:flex;flex-direction:column;gap:2px;max-height:440px;overflow-y:auto;}
+.news-row{display:flex;align-items:center;gap:10px;padding:10px 6px;border-bottom:1px solid var(--slate-100);text-decoration:none;color:inherit;}
+.news-row:last-child{border-bottom:none;}
+.news-row:hover{background:var(--bg);}
+.news-title{flex:1;font-size:13.5px;font-weight:600;color:var(--text);min-width:0;}
+
 .welcome-popup{
   position:fixed;top:26px;left:50%;transform:translateX(-50%) translateY(-14px);
   background:#fff;color:var(--text);border-radius:14px;padding:14px 24px;

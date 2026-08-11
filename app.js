@@ -6,7 +6,7 @@ let currentUser = null;
 function currentUserEmail(){ return (currentUser && currentUser.email) || ''; }
 function currentUserId(){ return currentUser && currentUser.id; }
 
-let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[] };
+let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[] };
 
 /* ---------- row <-> app object mappers ---------- */
 function contactFromRow(r){
@@ -49,6 +49,18 @@ function goalToRow(g){
   return { label:g.label, metric:g.metric||'Custom', period:g.period||'Weekly', target:Number(g.target)||0,
     manual_progress:Number(g.manualProgress)||0, owner_email:g.ownerEmail||null };
 }
+function marketCompFromRow(r){
+  return { id:r.id, address:r.address, submarket:r.submarket||'', propertyType:r.property_type||'',
+    transactionType:r.transaction_type||'Sale', price:r.price||0, squareFeet:r.square_feet||0,
+    pricePerSf:r.price_per_sf||0, capRate:r.cap_rate||'', transactionDate:r.transaction_date||'',
+    source:r.source||'', notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at };
+}
+function marketCompToRow(c){
+  return { address:c.address, submarket:c.submarket||null, property_type:c.propertyType||null,
+    transaction_type:c.transactionType||'Sale', price:c.price||0, square_feet:c.squareFeet||0,
+    price_per_sf:c.pricePerSf||0, cap_rate:c.capRate===''?null:Number(c.capRate), transaction_date:c.transactionDate||null,
+    source:c.source||null, notes:c.notes||null, owner_email:c.ownerEmail||null };
+}
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
     commissionPct:r.commission_pct||0, stage:r.stage, closeDate:r.close_date||'', contactId:r.contact_id||null,
@@ -76,6 +88,7 @@ const LISTING_TYPES = ['Lease','Sale'];
 const LISTING_STATUSES = ['Active','Under Contract','Expired','Withdrawn','Off Market'];
 const GOAL_METRICS = ['Calls Logged','New Listings','Deals Closed','Commission Earned','Custom'];
 const GOAL_PERIODS = ['Daily','Weekly','Monthly'];
+const COMP_TRANSACTION_TYPES = ['Sale','Lease'];
 
 /* ---------- helpers ---------- */
 function money(n){
@@ -247,9 +260,14 @@ async function loadAllData(){
   todosGoalsSchemaReady = !todosRes.error && !goalsRes.error;
   state.todos = todosGoalsSchemaReady ? (todosRes.data||[]).map(todoFromRow) : [];
   state.goals = todosGoalsSchemaReady ? (goalsRes.data||[]).map(goalFromRow) : [];
+
+  const compsRes = await supabaseClient.from('market_comps').select('*').order('transaction_date',{ascending:false, nullsFirst:false});
+  marketCompsSchemaReady = !compsRes.error;
+  state.marketComps = marketCompsSchemaReady ? (compsRes.data||[]).map(marketCompFromRow) : [];
   return true;
 }
 let todosGoalsSchemaReady = true;
+let marketCompsSchemaReady = true;
 let listingsSchemaReady = true;
 
 async function logActivity(type, description, contactId, dealId){
@@ -273,6 +291,7 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'listing_interests' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'todos' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'goals' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'market_comps' }, onRemoteChange)
     .subscribe();
 }
 function onRemoteChange(){
@@ -394,7 +413,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, goals: renderGoals, activity: renderActivity };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, goals: renderGoals, news: renderNews, activity: renderActivity };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -1878,6 +1897,247 @@ function openGoalModal(goal){
     if(document.getElementById('addGoalBtn')) renderGoals();
     if(location.hash==='#coldcall') renderColdCall();
   };
+}
+
+/* ---------- News & Updates ---------- */
+const NEWS_FEEDS = [
+  { name:'REBusinessOnline', url:'https://rebusinessonline.com/feed/', tag:'National CRE' },
+  { name:'Bisnow', url:'https://www.bisnow.com/rss/all', tag:'National CRE' },
+  { name:'Connect CRE', url:'https://www.connectcre.com/feed/', tag:'National CRE' },
+  { name:'WisBusiness', url:'https://wisbusiness.com/feed/', tag:'Wisconsin' },
+  { name:'Urban Milwaukee', url:'https://urbanmilwaukee.com/feed/', tag:'Wisconsin' },
+];
+const RSS2JSON_API_KEY = '';
+const NEWS_CACHE_KEY = 'cre_crm_news_cache_v1';
+let newsFetchInFlight = false;
+
+async function fetchNewsFeeds(force){
+  if(!force){
+    try{
+      const cached = JSON.parse(localStorage.getItem(NEWS_CACHE_KEY)||'null');
+      if(cached && Date.now()-cached.fetchedAt < 60*60*1000) return cached;
+    }catch(e){}
+  }
+  if(newsFetchInFlight) return null;
+  newsFetchInFlight = true;
+  try{
+    const results = await Promise.all(NEWS_FEEDS.map(async feed=>{
+      try{
+        const keyParam = RSS2JSON_API_KEY ? `&api_key=${RSS2JSON_API_KEY}` : '';
+        const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}${keyParam}`);
+        const data = await res.json();
+        if(data.status !== 'ok') return [];
+        return (data.items||[]).slice(0,8).map(item=>({
+          title:item.title, link:item.link, pubDate:item.pubDate, source:feed.name, tag:feed.tag,
+        }));
+      }catch(e){ return []; }
+    }));
+    const items = results.flat().sort((a,b)=> new Date(b.pubDate)-new Date(a.pubDate));
+    const cache = { items, fetchedAt: Date.now() };
+    try{ localStorage.setItem(NEWS_CACHE_KEY, JSON.stringify(cache)); }catch(e){}
+    return cache;
+  } finally {
+    newsFetchInFlight = false;
+  }
+}
+
+function renderNewsFeedBody(cache){
+  const body = document.getElementById('newsFeedBody');
+  if(!body) return;
+  if(!RSS2JSON_API_KEY){
+    body.innerHTML = `<div class="empty">News feed isn't configured yet — waiting on an rss2json.com API key.</div>`;
+    return;
+  }
+  if(!cache || !cache.items || !cache.items.length){
+    body.innerHTML = `<div class="empty">Couldn't load headlines right now. Try Refresh, or check back later.</div>`;
+    return;
+  }
+  body.innerHTML = `
+    <div class="cell-sub" style="margin-bottom:10px;">Updated ${timeAgo(new Date(cache.fetchedAt).toISOString())}</div>
+    <div class="news-list">
+      ${cache.items.slice(0,30).map(item=>`
+        <a class="news-row" href="${esc(item.link)}" target="_blank" rel="noopener noreferrer">
+          <span class="badge ${item.tag==='Wisconsin'?'client':'cold'}">${esc(item.tag)}</span>
+          <span class="news-title">${esc(item.title)}</span>
+          <span class="cell-sub" style="flex-shrink:0;">${esc(item.source)} · ${item.pubDate? fmtDate(item.pubDate):''}</span>
+        </a>`).join('')}
+    </div>
+  `;
+}
+
+async function loadNewsIntoView(){
+  const btn = document.getElementById('refreshNewsBtn');
+  if(btn) btn.onclick = async ()=>{
+    document.getElementById('newsFeedBody').innerHTML = '<div class="empty">Refreshing…</div>';
+    renderNewsFeedBody(await fetchNewsFeeds(true));
+  };
+  if(!RSS2JSON_API_KEY){ renderNewsFeedBody(null); return; }
+  renderNewsFeedBody(await fetchNewsFeeds(false));
+}
+
+function renderCompStats(){
+  const el = document.getElementById('compStats');
+  if(!el) return;
+  if(!marketCompsSchemaReady){
+    el.innerHTML = `<div class="panel" style="grid-column:1/-1;"><div class="panel-body"><div class="empty">Run <code>schema_v6.sql</code> to enable market comps tracking.</div></div></div>`;
+    return;
+  }
+  const byType = {};
+  state.marketComps.forEach(c=>{
+    if(!c.propertyType || !c.pricePerSf) return;
+    (byType[c.propertyType] = byType[c.propertyType]||[]).push(c.pricePerSf);
+  });
+  const cards = Object.entries(byType).map(([type, vals])=>{
+    const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+    return `<div class="stat-card"><div class="label">${esc(type)} Avg $/SF</div><div class="value">${fmtPerSf(avg)}</div><div class="sub">${vals.length} comp${vals.length===1?'':'s'}</div></div>`;
+  });
+  el.innerHTML = cards.length ? cards.join('') : `<div class="panel" style="grid-column:1/-1;"><div class="panel-body"><div class="empty">Log a few comps to see average $/SF by property type.</div></div></div>`;
+}
+
+function renderCompsTable(){
+  const body = document.getElementById('compsBody');
+  if(!body) return;
+  if(!marketCompsSchemaReady){ body.innerHTML = `<tr><td colspan="10"><div class="empty">Run <code>schema_v6.sql</code> to enable market comps tracking.</div></td></tr>`; return; }
+  const list = state.marketComps.slice().sort((a,b)=> new Date(b.transactionDate||b.createdAt) - new Date(a.transactionDate||a.createdAt));
+  if(!list.length){ body.innerHTML = `<tr><td colspan="10"><div class="empty">No comps logged yet. Add the first one your team has seen close.</div></td></tr>`; return; }
+  body.innerHTML = list.map(c=>`
+    <tr data-id="${c.id}">
+      <td class="cell-name">${esc(c.address)}</td>
+      <td>${esc(c.propertyType||'—')}</td>
+      <td><span class="badge ${c.transactionType==='Lease'?'client':'cold'}">${esc(c.transactionType)}</span></td>
+      <td>${c.price?fullMoney(c.price):'—'}</td>
+      <td>${fmtSf(c.squareFeet)}</td>
+      <td>${fmtPerSf(c.pricePerSf)}</td>
+      <td>${c.capRate!==''&&c.capRate!=null? c.capRate+'%':'—'}</td>
+      <td>${c.transactionDate?fmtDate(c.transactionDate):'—'}</td>
+      <td>${esc(c.source||'—')}</td>
+      <td>
+        <div class="actions-cell">
+          <button class="icon-btn editBtn" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+          <button class="icon-btn delBtn" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+  body.querySelectorAll('tr').forEach(tr=>{
+    const id = tr.dataset.id;
+    tr.querySelector('.editBtn').onclick = ()=>openCompModal(state.marketComps.find(c=>c.id===id));
+    tr.querySelector('.delBtn').onclick = async ()=>{
+      if(confirm('Delete this comp?')){
+        const { error } = await supabaseClient.from('market_comps').delete().eq('id', id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData(); toast('Comp deleted'); renderCompStats(); renderCompsTable();
+      }
+    };
+  });
+}
+
+function openCompModal(comp){
+  const isEdit = !!comp;
+  const c = comp || { address:'', submarket:'', propertyType:PROPERTY_TYPES[0], transactionType:'Sale', price:'', squareFeet:'', pricePerSf:'', capRate:'', transactionDate:'', source:'', notes:'' };
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>${isEdit?'Edit Comp':'Log Market Comp'}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <label class="full">Address<input type="text" id="mc_address" value="${esc(c.address)}" placeholder="123 Main St, City, WI"></label>
+            <label>Submarket<input type="text" id="mc_submarket" value="${esc(c.submarket)}" placeholder="e.g. Waukesha, Menomonee Falls"></label>
+            <label>Property Type<select id="mc_ptype">${PROPERTY_TYPES.map(t=>`<option ${t===c.propertyType?'selected':''}>${t}</option>`).join('')}</select></label>
+            <label>Deal Type<select id="mc_ttype">${COMP_TRANSACTION_TYPES.map(t=>`<option ${t===c.transactionType?'selected':''}>${t}</option>`).join('')}</select></label>
+            <label>Date<input type="date" id="mc_date" value="${c.transactionDate||''}"></label>
+            <label>Price<input type="number" id="mc_price" value="${c.price}" placeholder="1500000"></label>
+            <label>Square Feet<input type="number" id="mc_sf" value="${c.squareFeet}" placeholder="15000"></label>
+            <label>Price / SF<input type="number" step="0.01" id="mc_persf" value="${c.pricePerSf}" placeholder="105.00"></label>
+            <label>Cap Rate %<input type="number" step="0.01" id="mc_cap" value="${c.capRate}" placeholder="6.5"></label>
+            <label>Source<input type="text" id="mc_source" value="${esc(c.source)}" placeholder="Public record, CoStar, broker call…"></label>
+            <label class="full">Notes<textarea id="mc_notes" placeholder="Anything else worth remembering about this deal…">${esc(c.notes)}</textarea></label>
+          </div>
+        </div>
+        <div class="modal-foot">
+          ${isEdit? '<button class="btn danger" id="deleteCompBtn" style="margin-right:auto;">Delete</button>':''}
+          <button class="btn outline" id="cancelBtn">Cancel</button>
+          <button class="btn gold" id="saveCompBtn">${isEdit?'Save Changes':'Log Comp'}</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  if(isEdit){
+    root.querySelector('#deleteCompBtn').onclick = async ()=>{
+      if(confirm('Delete this comp?')){
+        const { error } = await supabaseClient.from('market_comps').delete().eq('id', c.id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData(); toast('Comp deleted'); close(); renderCompStats(); renderCompsTable();
+      }
+    };
+  }
+  root.querySelector('#saveCompBtn').onclick = async ()=>{
+    const address = document.getElementById('mc_address').value.trim();
+    if(!address){ toast('Address is required'); return; }
+    const data = {
+      address,
+      submarket: document.getElementById('mc_submarket').value.trim(),
+      propertyType: document.getElementById('mc_ptype').value,
+      transactionType: document.getElementById('mc_ttype').value,
+      transactionDate: document.getElementById('mc_date').value,
+      price: Number(document.getElementById('mc_price').value)||0,
+      squareFeet: Number(document.getElementById('mc_sf').value)||0,
+      pricePerSf: Number(document.getElementById('mc_persf').value)||0,
+      capRate: document.getElementById('mc_cap').value,
+      source: document.getElementById('mc_source').value.trim(),
+      notes: document.getElementById('mc_notes').value.trim(),
+    };
+    const btn = document.getElementById('saveCompBtn');
+    btn.disabled = true;
+    if(isEdit){
+      const { error } = await supabaseClient.from('market_comps').update(marketCompToRow({ ...data, ownerEmail:c.ownerEmail })).eq('id', c.id);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      toast('Comp updated');
+    } else {
+      const row = marketCompToRow({ ...data, ownerEmail: currentUserEmail() });
+      const { error } = await supabaseClient.from('market_comps').insert(row);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      await logActivity('comp', `Logged market comp <b>${esc(address)}</b> <span class="cell-sub">(by ${esc(ownerLabel(currentUserEmail()))})</span>`);
+      toast('Comp logged');
+    }
+    await loadAllData();
+    close();
+    if(document.getElementById('compsBody')){ renderCompStats(); renderCompsTable(); }
+  };
+}
+
+function renderNews(){
+  const view = document.getElementById('view');
+  view.className = 'view';
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>News &amp; Updates</h1><p>Real estate trends, Wisconsin news, and your team's SE Wisconsin market comps</p></div>
+    </div>
+    <div class="panel" style="margin-bottom:26px;">
+      <div class="panel-head"><h3>Real Estate &amp; Wisconsin News</h3><button class="btn sm outline" id="refreshNewsBtn">Refresh</button></div>
+      <div class="panel-body" id="newsFeedBody"><div class="empty">Loading headlines…</div></div>
+    </div>
+    <div class="page-head" style="margin-bottom:14px;">
+      <div><h2 style="font-size:16px;margin:0;">SE Wisconsin Market Comps</h2><p style="margin:2px 0 0;color:var(--text-dim);font-size:13px;">Deals your team has logged — sales, leases, and pricing seen in the market</p></div>
+      <button class="btn gold" id="addCompBtn">+ Log Comp</button>
+    </div>
+    <div id="compStats" class="stat-grid" style="margin-bottom:16px;"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Address</th><th>Type</th><th>Deal</th><th>Price</th><th>SF</th><th>$/SF</th><th>Cap Rate</th><th>Date</th><th>Source</th><th></th></tr></thead>
+        <tbody id="compsBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('addCompBtn').onclick = ()=>openCompModal();
+  renderCompStats();
+  renderCompsTable();
+  loadNewsIntoView();
 }
 
 /* ---------- Activity Log ---------- */
