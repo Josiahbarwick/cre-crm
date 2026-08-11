@@ -934,12 +934,12 @@ function renderAuthScreen(mode){
   root.innerHTML = `
     <div class="auth-wrap">
       <div class="auth-card">
-        <div class="auth-brand"><div class="brand-mark">B</div><div class="brand-name">Brokerage<span>CRM</span></div></div>
+        <div class="auth-brand"><div class="brand-mark">NP</div><div class="brand-name">NAI Pfefferle<span>CRM</span></div></div>
         <h2>${mode==='signup' ? 'Create your account' : 'Sign in'}</h2>
         <p>${mode==='signup' ? "Set up your own login for your team's shared CRM." : 'Shared CRM for the team — sign in with your account.'}</p>
         <div class="auth-error" id="authError"></div>
         <div class="auth-form">
-          <label>Email<input type="email" id="authEmail" placeholder="you@brokerage.com" autocomplete="email"></label>
+          <label>Email<input type="email" id="authEmail" placeholder="you@naipfefferle.com" autocomplete="email"></label>
           <label>Password<input type="password" id="authPassword" placeholder="••••••••" autocomplete="${mode==='signup'?'new-password':'current-password'}"></label>
           <button class="btn gold auth-submit" id="authSubmitBtn">${mode==='signup' ? 'Create Account' : 'Sign In'}</button>
         </div>
