@@ -1,9 +1,9 @@
 :root{
-  --navy-950:#0b1220;
-  --navy-900:#101a2c;
-  --navy-800:#16233a;
-  --navy-700:#1d2f4d;
-  --navy-600:#2a4166;
+  --navy-950:#1c0a0b;
+  --navy-900:#280e10;
+  --navy-800:#3a1418;
+  --navy-700:#4f1b20;
+  --navy-600:#6b252c;
   --slate-500:#5b6b85;
   --slate-400:#8593a8;
   --slate-300:#b3bdcc;
@@ -109,7 +109,7 @@ svg{width:18px;height:18px;fill:currentColor;flex-shrink:0;}
 }
 .btn:hover{background:var(--navy-700);}
 .btn.gold{background:var(--navy-950);color:#fff;}
-.btn.gold:hover{background:#000;}
+.btn.gold:hover{background:#0f0405;}
 .btn.outline{background:#fff;color:var(--text);border:1px solid var(--border);}
 .btn.outline:hover{border-color:var(--slate-400);}
 .btn.sm{padding:6px 10px;font-size:12px;border-radius:7px;}

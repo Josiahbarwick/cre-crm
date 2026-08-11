@@ -24,12 +24,14 @@ function listingFromRow(r){
   return { id:r.id, address:r.address, listingType:r.listing_type||'Lease', propertyType:r.property_type||'',
     status:r.status||'Active', price:r.price||0, squareFeet:r.square_feet||0, pricePerSf:r.price_per_sf||0,
     commissionPct:r.commission_pct||0, expirationDate:r.expiration_date||'', ownerContactId:r.owner_contact_id||null,
+    clientContactId:r.client_contact_id||null,
     notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at, updatedAt:r.updated_at };
 }
 function listingToRow(l){
   return { address:l.address, listing_type:l.listingType||'Lease', property_type:l.propertyType||null,
     status:l.status||'Active', price:l.price||0, square_feet:l.squareFeet||0, price_per_sf:l.pricePerSf||0,
     commission_pct:l.commissionPct||0, expiration_date:l.expirationDate||null, owner_contact_id:l.ownerContactId||null,
+    client_contact_id:l.clientContactId||null,
     notes:l.notes||null, owner_email:l.ownerEmail||null };
 }
 function listingInterestFromRow(r){
@@ -57,7 +59,7 @@ const STATUSES = ['Cold','Warm','Hot','Client','Dead'];
 const STAGES = ['New Lead','Contacted','Qualified','LOI / Proposal','Negotiation','Under Contract','Closed Won','Closed Lost'];
 const OUTCOMES = ['No Answer','Left Voicemail','Gatekeeper','Callback Requested','Not Interested','Interested','Meeting Scheduled','Wrong Number'];
 const PROPERTY_TYPES = ['Office','Industrial','Retail','Multifamily','Land','Mixed-Use','Medical','Hospitality','Other'];
-const TRANSACTION_TYPES = ['Lease','Sale','Both'];
+const TRANSACTION_TYPES = ['Lease','Sale','Buyer','Tenant','Both'];
 const LISTING_TYPES = ['Lease','Sale'];
 const LISTING_STATUSES = ['Active','Under Contract','Expired','Withdrawn','Off Market'];
 
@@ -398,10 +400,10 @@ function renderProspects(){
   renderProspectsTable();
 }
 
+const TXN_BADGE_CLASS = { Lease:'client', Sale:'cold', Buyer:'warm', Tenant:'hot', Both:'dead' };
 function txnBadge(t){
   if(!t) return '<span class="badge dead">Unspecified</span>';
-  const cls = t==='Lease' ? 'client' : t==='Sale' ? 'cold' : 'hot';
-  return `<span class="badge ${cls}">${esc(t)}</span>`;
+  return `<span class="badge ${TXN_BADGE_CLASS[t]||'dead'}">${esc(t)}</span>`;
 }
 
 function contactRowHtml(c){
@@ -464,8 +466,8 @@ function renderProspectsTable(){
   if(txnF){
     body.innerHTML = list.map(contactRowHtml).join('');
   } else {
-    const leases = list.filter(c=>c.transactionType==='Lease'||c.transactionType==='Both');
-    const sales = list.filter(c=>c.transactionType==='Sale'||c.transactionType==='Both');
+    const leases = list.filter(c=>['Lease','Tenant','Both'].includes(c.transactionType));
+    const sales = list.filter(c=>['Sale','Buyer','Both'].includes(c.transactionType));
     const unspecified = list.filter(c=>!c.transactionType);
     const section = (label, items) => items.length ? `<tr class="table-group-row"><td colspan="9">${label} <span class="cell-sub">(${items.length})</span></td></tr>${items.map(contactRowHtml).join('')}` : '';
     body.innerHTML = section('Leases', leases) + section('Sales', sales) + section('Unspecified', unspecified);
@@ -1017,11 +1019,23 @@ function parseListingText(text){
 }
 
 let listingModalTab = 'details';
+function contactMiniInfo(contactId){
+  const c = contactById(contactId);
+  if(!c) return 'No contact linked';
+  const parts = [c.phone, c.email].filter(Boolean);
+  return `${c.name}${parts.length? ' — '+parts.join(' · ') : ''}`;
+}
 function openListingModal(listing, prefillOwnerContactId){
   const isEdit = !!listing;
-  const l = listing || { address:'', listingType:'Lease', propertyType:PROPERTY_TYPES[0], status:'Active', price:'', squareFeet:'', pricePerSf:'', commissionPct:'', expirationDate:'', ownerContactId:prefillOwnerContactId||'', notes:'' };
+  const l = listing || { address:'', listingType:'Lease', propertyType:PROPERTY_TYPES[0], status:'Active', price:'', squareFeet:'', pricePerSf:'', commissionPct:'', expirationDate:'', ownerContactId:prefillOwnerContactId||'', clientContactId:'', notes:'' };
   listingModalTab = 'details';
-  const contactOptions = state.contacts.map(c=>`<option value="${c.id}" ${c.id===l.ownerContactId?'selected':''}>${esc(c.name)}</option>`).join('');
+  const fs = {
+    address:l.address||'', listingType:l.listingType||'Lease', propertyType:l.propertyType||PROPERTY_TYPES[0],
+    status:l.status||'Active', expirationDate:l.expirationDate||'', price:l.price||'', squareFeet:l.squareFeet||'',
+    pricePerSf:l.pricePerSf||'', commissionPct:l.commissionPct||'', ownerContactId:l.ownerContactId||'',
+    clientContactId:l.clientContactId||'', notes:l.notes||'',
+  };
+  const contactOptions = (selectedId) => state.contacts.map(c=>`<option value="${c.id}" ${c.id===selectedId?'selected':''}>${esc(c.name)}</option>`).join('');
 
   function detailsTabHtml(){
     return `
@@ -1031,18 +1045,27 @@ function openListingModal(listing, prefillOwnerContactId){
         <button type="button" class="btn outline sm" id="autofillBtn">Autofill from pasted text</button>
       </div>
       <div class="form-grid">
-        <label class="full">Address<input type="text" id="l_address" value="${esc(l.address)}" placeholder="123 Main St, City, ST"></label>
-        <label>Listing Type<select id="l_type">${LISTING_TYPES.map(t=>`<option ${t===l.listingType?'selected':''}>${t}</option>`).join('')}</select></label>
-        <label>Property Type<select id="l_ptype">${PROPERTY_TYPES.map(t=>`<option ${t===l.propertyType?'selected':''}>${t}</option>`).join('')}</select></label>
-        <label>Status<select id="l_status">${LISTING_STATUSES.map(s=>`<option ${s===l.status?'selected':''}>${s}</option>`).join('')}</select></label>
-        <label>Expiration Date<input type="date" id="l_exp" value="${l.expirationDate||''}"></label>
-        <label>Price<input type="number" id="l_price" value="${l.price}" placeholder="1500000"></label>
-        <label>Square Feet<input type="number" id="l_sf" value="${l.squareFeet}" placeholder="12000"></label>
-        <label>Price / SF<input type="number" step="0.01" id="l_persf" value="${l.pricePerSf}" placeholder="18.50"></label>
-        <label>Commission %<input type="number" step="0.1" id="l_comm" value="${l.commissionPct}" placeholder="6"></label>
-        <label class="full">Property Owner (contact)<select id="l_owner"><option value="">— None —</option>${contactOptions}</select></label>
-        <label class="full">Notes<textarea id="l_notes" placeholder="Access instructions, condition, anything worth remembering…">${esc(l.notes)}</textarea></label>
+        <label class="full">Address<input type="text" id="l_address" value="${esc(fs.address)}" placeholder="123 Main St, City, ST"></label>
+        <label>Listing Type<select id="l_type">${LISTING_TYPES.map(t=>`<option ${t===fs.listingType?'selected':''}>${t}</option>`).join('')}</select></label>
+        <label>Property Type<select id="l_ptype">${PROPERTY_TYPES.map(t=>`<option ${t===fs.propertyType?'selected':''}>${t}</option>`).join('')}</select></label>
+        <label>Status<select id="l_status">${LISTING_STATUSES.map(s=>`<option ${s===fs.status?'selected':''}>${s}</option>`).join('')}</select></label>
+        <label>Expiration Date<input type="date" id="l_exp" value="${fs.expirationDate}"></label>
+        <label>Price<input type="number" id="l_price" value="${fs.price}" placeholder="1500000"></label>
+        <label>Square Feet<input type="number" id="l_sf" value="${fs.squareFeet}" placeholder="12000"></label>
+        <label>Price / SF<input type="number" step="0.01" id="l_persf" value="${fs.pricePerSf}" placeholder="18.50"></label>
+        <label>Commission %<input type="number" step="0.1" id="l_comm" value="${fs.commissionPct}" placeholder="6"></label>
+        <label class="full">Property Owner (contact)<select id="l_owner"><option value="">— None —</option>${contactOptions(fs.ownerContactId)}</select>
+          <span class="cell-sub" id="ownerInfo" style="margin-top:4px;">${contactMiniInfo(fs.ownerContactId)}</span></label>
+        <label class="full">Client — who we represent<select id="l_client"><option value="">— None —</option>${contactOptions(fs.clientContactId)}</select>
+          <span class="cell-sub" id="clientInfo" style="margin-top:4px;">${contactMiniInfo(fs.clientContactId)}</span></label>
       </div>
+    `;
+  }
+
+  function notesTabHtml(){
+    return `
+      <p class="hint" style="color:var(--text-dim);font-size:12.5px;margin-top:0;">Notes, backstory, and special instructions for this listing.</p>
+      <textarea id="l_notes" style="min-height:280px;" placeholder="Access instructions, ownership history, tenant relationships, negotiation notes, anything worth remembering…">${esc(fs.notes)}</textarea>
     `;
   }
 
@@ -1072,19 +1095,38 @@ function openListingModal(listing, prefillOwnerContactId){
   }
 
   function renderModalBody(root){
-    root.querySelector('#listingModalBody').innerHTML = listingModalTab==='details' ? detailsTabHtml() : clientsTabHtml();
+    const body = root.querySelector('#listingModalBody');
+    body.innerHTML = listingModalTab==='details' ? detailsTabHtml() : listingModalTab==='notes' ? notesTabHtml() : clientsTabHtml();
     if(listingModalTab==='details'){
+      const bind = (id, key, isNumber) => {
+        const el = root.querySelector('#'+id);
+        el.addEventListener('input', ()=>{ fs[key] = isNumber ? el.value : el.value; });
+        el.addEventListener('change', ()=>{ fs[key] = el.value; });
+      };
+      bind('l_address','address'); bind('l_type','listingType'); bind('l_ptype','propertyType');
+      bind('l_status','status'); bind('l_exp','expirationDate'); bind('l_price','price');
+      bind('l_sf','squareFeet'); bind('l_persf','pricePerSf'); bind('l_comm','commissionPct');
+      root.querySelector('#l_owner').addEventListener('change', e=>{
+        fs.ownerContactId = e.target.value;
+        root.querySelector('#ownerInfo').textContent = contactMiniInfo(fs.ownerContactId);
+      });
+      root.querySelector('#l_client').addEventListener('change', e=>{
+        fs.clientContactId = e.target.value;
+        root.querySelector('#clientInfo').textContent = contactMiniInfo(fs.clientContactId);
+      });
       root.querySelector('#autofillBtn').onclick = ()=>{
         const parsed = parseListingText(root.querySelector('#autofillText').value);
-        if(parsed.address) root.querySelector('#l_address').value = parsed.address;
-        if(parsed.listingType) root.querySelector('#l_type').value = parsed.listingType;
-        if(parsed.price) root.querySelector('#l_price').value = parsed.price;
-        if(parsed.squareFeet) root.querySelector('#l_sf').value = parsed.squareFeet;
-        if(parsed.pricePerSf) root.querySelector('#l_persf').value = parsed.pricePerSf;
-        if(parsed.expirationDate) root.querySelector('#l_exp').value = parsed.expirationDate;
+        if(parsed.address){ root.querySelector('#l_address').value = parsed.address; fs.address = parsed.address; }
+        if(parsed.listingType){ root.querySelector('#l_type').value = parsed.listingType; fs.listingType = parsed.listingType; }
+        if(parsed.price){ root.querySelector('#l_price').value = parsed.price; fs.price = parsed.price; }
+        if(parsed.squareFeet){ root.querySelector('#l_sf').value = parsed.squareFeet; fs.squareFeet = parsed.squareFeet; }
+        if(parsed.pricePerSf){ root.querySelector('#l_persf').value = parsed.pricePerSf; fs.pricePerSf = parsed.pricePerSf; }
+        if(parsed.expirationDate){ root.querySelector('#l_exp').value = parsed.expirationDate; fs.expirationDate = parsed.expirationDate; }
         const found = Object.keys(parsed).length;
         toast(found ? `Filled in ${found} field${found===1?'':'s'} — please double-check them` : "Couldn't find recognizable fields in that text");
       };
+    } else if(listingModalTab==='notes'){
+      root.querySelector('#l_notes').addEventListener('input', e=>{ fs.notes = e.target.value; });
     } else {
       root.querySelectorAll('.lc-remove').forEach(btn=>{
         btn.onclick = async ()=>{
@@ -1118,12 +1160,15 @@ function openListingModal(listing, prefillOwnerContactId){
     }
   }
 
+  const tabs = isEdit
+    ? [['details','Details'],['notes','Notes'],['clients','Potential Clients']]
+    : [['details','Details'],['notes','Notes']];
   const html = `
     <div class="modal-overlay">
       <div class="modal">
         <div class="modal-head"><h3>${isEdit?'Edit Listing':'Add Listing'}</h3><button class="modal-close">&times;</button></div>
         <div class="modal-body">
-          ${isEdit? `<div class="modal-tabs"><button type="button" class="modal-tab active" data-tab="details">Details</button><button type="button" class="modal-tab" data-tab="clients">Potential Clients</button></div>` : ''}
+          <div class="modal-tabs">${tabs.map(([key,label],i)=>`<button type="button" class="modal-tab ${i===0?'active':''}" data-tab="${key}">${label}</button>`).join('')}</div>
           <div id="listingModalBody"></div>
         </div>
         <div class="modal-foot">
@@ -1139,14 +1184,14 @@ function openListingModal(listing, prefillOwnerContactId){
   root.querySelector('.modal-close').onclick = close;
   root.querySelector('#cancelBtn').onclick = close;
   root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  root.querySelectorAll('.modal-tab').forEach(btn=>{
+    btn.onclick = ()=>{
+      listingModalTab = btn.dataset.tab;
+      root.querySelectorAll('.modal-tab').forEach(b=>b.classList.toggle('active', b===btn));
+      renderModalBody(root);
+    };
+  });
   if(isEdit){
-    root.querySelectorAll('.modal-tab').forEach(btn=>{
-      btn.onclick = ()=>{
-        listingModalTab = btn.dataset.tab;
-        root.querySelectorAll('.modal-tab').forEach(b=>b.classList.toggle('active', b===btn));
-        renderModalBody(root);
-      };
-    });
     root.querySelector('#deleteListingBtn').onclick = async ()=>{
       if(confirm('Delete this listing?')){
         const { error } = await supabaseClient.from('listings').delete().eq('id', l.id);
@@ -1159,25 +1204,21 @@ function openListingModal(listing, prefillOwnerContactId){
   renderModalBody(root);
 
   root.querySelector('#saveListingBtn').onclick = async ()=>{
-    if(listingModalTab!=='details'){
-      listingModalTab='details';
-      root.querySelectorAll('.modal-tab').forEach(b=>b.classList.toggle('active', b.dataset.tab==='details'));
-      renderModalBody(root);
-    }
-    const address = document.getElementById('l_address').value.trim();
+    const address = fs.address.trim();
     if(!address){ toast('Address is required'); return; }
     const data = {
       address,
-      listingType: document.getElementById('l_type').value,
-      propertyType: document.getElementById('l_ptype').value,
-      status: document.getElementById('l_status').value,
-      expirationDate: document.getElementById('l_exp').value,
-      price: Number(document.getElementById('l_price').value)||0,
-      squareFeet: Number(document.getElementById('l_sf').value)||0,
-      pricePerSf: Number(document.getElementById('l_persf').value)||0,
-      commissionPct: Number(document.getElementById('l_comm').value)||0,
-      ownerContactId: document.getElementById('l_owner').value || null,
-      notes: document.getElementById('l_notes').value.trim(),
+      listingType: fs.listingType,
+      propertyType: fs.propertyType,
+      status: fs.status,
+      expirationDate: fs.expirationDate,
+      price: Number(fs.price)||0,
+      squareFeet: Number(fs.squareFeet)||0,
+      pricePerSf: Number(fs.pricePerSf)||0,
+      commissionPct: Number(fs.commissionPct)||0,
+      ownerContactId: fs.ownerContactId || null,
+      clientContactId: fs.clientContactId || null,
+      notes: fs.notes.trim(),
     };
     const btn = document.getElementById('saveListingBtn');
     btn.disabled = true;
