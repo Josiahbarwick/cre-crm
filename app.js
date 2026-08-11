@@ -2030,7 +2030,7 @@ function renderAuthScreen(mode){
   root.innerHTML = `
     <div class="auth-wrap">
       <div class="auth-card">
-        <div class="auth-brand"><img src="logo.svg" alt="NAI Pfefferle" class="auth-logo"><span class="brand-suffix">CRM</span></div>
+        <div class="auth-brand"><div class="auth-logo-wrap" data-tooltip="Make Wally happy"><img src="logo.svg" alt="NAI Pfefferle" class="auth-logo"></div><span class="brand-suffix">CRM</span></div>
         <h2>${mode==='signup' ? 'Create your account' : 'Sign in'}</h2>
         <p>${mode==='signup' ? "Set up your own login for your team's shared CRM." : 'Shared CRM for the team — sign in with your account.'}</p>
         <div class="auth-error" id="authError"></div>
@@ -2078,10 +2078,28 @@ function renderAuthScreen(mode){
   if(toggle) toggle.onclick = e=>{ e.preventDefault(); renderAuthScreen(mode==='signup'?'signin':'signup'); };
 }
 
+let welcomeShown = false;
+function showWelcomePopup(){
+  if(welcomeShown) return;
+  welcomeShown = true;
+  const name = ownerLabel(currentUserEmail());
+  const nice = name.charAt(0).toUpperCase()+name.slice(1);
+  const el = document.createElement('div');
+  el.className = 'welcome-popup';
+  el.innerHTML = `<span class="wp-icon">👋</span><span>Welcome back, ${esc(nice)}!</span>`;
+  document.body.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('show'));
+  setTimeout(()=>{
+    el.classList.remove('show');
+    setTimeout(()=>el.remove(), 300);
+  }, 3000);
+}
+
 async function showApp(){
   document.getElementById('authRoot').innerHTML = '';
   document.getElementById('app').style.display = '';
   document.getElementById('whoami').textContent = 'Signed in as ' + currentUserEmail();
+  showWelcomePopup();
   const ok = await loadAllData();
   subscribeRealtime();
   if(ok) navigate();
