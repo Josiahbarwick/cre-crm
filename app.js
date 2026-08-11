@@ -24,14 +24,14 @@ function listingFromRow(r){
   return { id:r.id, address:r.address, listingType:r.listing_type||'Lease', propertyType:r.property_type||'',
     status:r.status||'Active', price:r.price||0, squareFeet:r.square_feet||0, pricePerSf:r.price_per_sf||0,
     commissionPct:r.commission_pct||0, expirationDate:r.expiration_date||'', ownerContactId:r.owner_contact_id||null,
-    clientContactId:r.client_contact_id||null,
+    clientContactId:r.client_contact_id||null, brokerEmails:r.broker_emails||[],
     notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at, updatedAt:r.updated_at };
 }
 function listingToRow(l){
   return { address:l.address, listing_type:l.listingType||'Lease', property_type:l.propertyType||null,
     status:l.status||'Active', price:l.price||0, square_feet:l.squareFeet||0, price_per_sf:l.pricePerSf||0,
     commission_pct:l.commissionPct||0, expiration_date:l.expirationDate||null, owner_contact_id:l.ownerContactId||null,
-    client_contact_id:l.clientContactId||null,
+    client_contact_id:l.clientContactId||null, broker_emails:l.brokerEmails||[],
     notes:l.notes||null, owner_email:l.ownerEmail||null };
 }
 function listingInterestFromRow(r){
@@ -84,6 +84,15 @@ function initials(name){
   return (name||'?').split(' ').filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join('');
 }
 function ownerLabel(email){ return email ? email.split('@')[0] : 'Unassigned'; }
+function knownStaffEmails(){
+  const set = new Set();
+  state.contacts.forEach(c=>c.ownerEmail && set.add(c.ownerEmail));
+  state.deals.forEach(d=>d.ownerEmail && set.add(d.ownerEmail));
+  state.listings.forEach(l=>l.ownerEmail && set.add(l.ownerEmail));
+  state.calls.forEach(c=>c.loggedBy && set.add(c.loggedBy));
+  if(currentUserEmail()) set.add(currentUserEmail());
+  return [...set].sort();
+}
 function isToday(d){
   if(!d) return false;
   const a=new Date(d), b=new Date();
@@ -929,7 +938,7 @@ function renderListings(){
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Address</th><th>Type</th><th>Property Type</th><th>Price</th><th>SF</th><th>$/SF</th><th>Expires</th><th>Status</th><th>Owner</th><th></th></tr></thead>
+        <thead><tr><th>Address</th><th>Type</th><th>Property Type</th><th>Price</th><th>SF</th><th>$/SF</th><th>Expires</th><th>Status</th><th>Broker(s)</th><th>Added by</th><th></th></tr></thead>
         <tbody id="listingsBody"></tbody>
       </table>
     </div>
@@ -953,7 +962,7 @@ function renderListingsTable(){
     return true;
   }).sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
 
-  if(!list.length){ body.innerHTML = `<tr><td colspan="10"><div class="empty">No listings yet. Add your first active listing.</div></td></tr>`; return; }
+  if(!list.length){ body.innerHTML = `<tr><td colspan="11"><div class="empty">No listings yet. Add your first active listing.</div></td></tr>`; return; }
 
   const statusCls = { 'Active':'client', 'Under Contract':'warm', 'Expired':'dead', 'Withdrawn':'dead', 'Off Market':'cold' };
   body.innerHTML = list.map(l=>`
@@ -966,6 +975,7 @@ function renderListingsTable(){
       <td>${fmtPerSf(l.pricePerSf)}</td>
       <td>${l.expirationDate? fmtDate(l.expirationDate):'—'}</td>
       <td><span class="badge ${statusCls[l.status]||'dead'}">${esc(l.status)}</span></td>
+      <td>${(l.brokerEmails&&l.brokerEmails.length)? esc(l.brokerEmails.map(ownerLabel).join(', ')) : '<span class="cell-sub">Unassigned</span>'}</td>
       <td><span class="owner-tag" title="${esc(l.ownerEmail||'Unassigned')}"><span class="owner-dot">${esc(initials(ownerLabel(l.ownerEmail)))}</span>${esc(ownerLabel(l.ownerEmail))}</span></td>
       <td>
         <div class="actions-cell">
@@ -1027,14 +1037,16 @@ function contactMiniInfo(contactId){
 }
 function openListingModal(listing, prefillOwnerContactId){
   const isEdit = !!listing;
-  const l = listing || { address:'', listingType:'Lease', propertyType:PROPERTY_TYPES[0], status:'Active', price:'', squareFeet:'', pricePerSf:'', commissionPct:'', expirationDate:'', ownerContactId:prefillOwnerContactId||'', clientContactId:'', notes:'' };
+  const l = listing || { address:'', listingType:'Lease', propertyType:PROPERTY_TYPES[0], status:'Active', price:'', squareFeet:'', pricePerSf:'', commissionPct:'', expirationDate:'', ownerContactId:prefillOwnerContactId||'', clientContactId:'', notes:'', brokerEmails:[] };
   listingModalTab = 'details';
   const fs = {
     address:l.address||'', listingType:l.listingType||'Lease', propertyType:l.propertyType||PROPERTY_TYPES[0],
     status:l.status||'Active', expirationDate:l.expirationDate||'', price:l.price||'', squareFeet:l.squareFeet||'',
     pricePerSf:l.pricePerSf||'', commissionPct:l.commissionPct||'', ownerContactId:l.ownerContactId||'',
-    clientContactId:l.clientContactId||'', notes:l.notes||'',
+    clientContactId:l.clientContactId||'', notes:l.notes||'', brokerEmails:[...(l.brokerEmails||[])],
   };
+  let knownBrokers = knownStaffEmails();
+  fs.brokerEmails.forEach(e=>{ if(!knownBrokers.includes(e)) knownBrokers.push(e); });
   const contactOptions = (selectedId) => state.contacts.map(c=>`<option value="${c.id}" ${c.id===selectedId?'selected':''}>${esc(c.name)}</option>`).join('');
 
   function detailsTabHtml(){
@@ -1069,6 +1081,23 @@ function openListingModal(listing, prefillOwnerContactId){
     `;
   }
 
+  function brokerTabHtml(){
+    return `
+      <p class="hint" style="color:var(--text-dim);font-size:12.5px;margin-top:0;">Who's the broker (or co-brokers) on this listing?</p>
+      <div id="brokerCheckList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+        ${knownBrokers.length? knownBrokers.map(email=>`
+          <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:13.5px;color:var(--text);">
+            <input type="checkbox" class="brokerCheck" value="${esc(email)}" ${fs.brokerEmails.includes(email)?'checked':''}>
+            <span class="owner-tag"><span class="owner-dot">${esc(initials(ownerLabel(email)))}</span>${esc(ownerLabel(email))}</span>
+          </label>`).join('') : '<div class="empty" style="text-align:left;padding:0;">No known team members yet.</div>'}
+      </div>
+      <div class="add-linked-row">
+        <input type="text" id="addBrokerEmail" placeholder="another.broker@naipfefferle.com">
+        <button type="button" class="btn outline sm" id="addBrokerBtn">+ Add</button>
+      </div>
+    `;
+  }
+
   function clientsTabHtml(){
     const links = state.listingInterests.filter(li=>li.listingId===l.id);
     const linkedContacts = links.map(li=>({ link:li, contact: contactById(li.contactId) })).filter(x=>x.contact);
@@ -1096,7 +1125,7 @@ function openListingModal(listing, prefillOwnerContactId){
 
   function renderModalBody(root){
     const body = root.querySelector('#listingModalBody');
-    body.innerHTML = listingModalTab==='details' ? detailsTabHtml() : listingModalTab==='notes' ? notesTabHtml() : clientsTabHtml();
+    body.innerHTML = listingModalTab==='details' ? detailsTabHtml() : listingModalTab==='notes' ? notesTabHtml() : listingModalTab==='broker' ? brokerTabHtml() : clientsTabHtml();
     if(listingModalTab==='details'){
       const bind = (id, key, isNumber) => {
         const el = root.querySelector('#'+id);
@@ -1127,6 +1156,21 @@ function openListingModal(listing, prefillOwnerContactId){
       };
     } else if(listingModalTab==='notes'){
       root.querySelector('#l_notes').addEventListener('input', e=>{ fs.notes = e.target.value; });
+    } else if(listingModalTab==='broker'){
+      root.querySelectorAll('.brokerCheck').forEach(cb=>{
+        cb.addEventListener('change', ()=>{
+          if(cb.checked){ if(!fs.brokerEmails.includes(cb.value)) fs.brokerEmails.push(cb.value); }
+          else { fs.brokerEmails = fs.brokerEmails.filter(e=>e!==cb.value); }
+        });
+      });
+      root.querySelector('#addBrokerBtn').onclick = ()=>{
+        const input = root.querySelector('#addBrokerEmail');
+        const email = input.value.trim();
+        if(!email) return;
+        if(!knownBrokers.includes(email)) knownBrokers.push(email);
+        if(!fs.brokerEmails.includes(email)) fs.brokerEmails.push(email);
+        renderModalBody(root);
+      };
     } else {
       root.querySelectorAll('.lc-remove').forEach(btn=>{
         btn.onclick = async ()=>{
@@ -1161,8 +1205,8 @@ function openListingModal(listing, prefillOwnerContactId){
   }
 
   const tabs = isEdit
-    ? [['details','Details'],['notes','Notes'],['clients','Potential Clients']]
-    : [['details','Details'],['notes','Notes']];
+    ? [['details','Details'],['notes','Notes'],['broker','Broker'],['clients','Potential Clients']]
+    : [['details','Details'],['notes','Notes'],['broker','Broker']];
   const html = `
     <div class="modal-overlay">
       <div class="modal">
@@ -1218,6 +1262,7 @@ function openListingModal(listing, prefillOwnerContactId){
       commissionPct: Number(fs.commissionPct)||0,
       ownerContactId: fs.ownerContactId || null,
       clientContactId: fs.clientContactId || null,
+      brokerEmails: fs.brokerEmails,
       notes: fs.notes.trim(),
     };
     const btn = document.getElementById('saveListingBtn');
