@@ -4,8 +4,9 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let currentUser = null;
 function currentUserEmail(){ return (currentUser && currentUser.email) || ''; }
+function currentUserId(){ return currentUser && currentUser.id; }
 
-let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[] };
+let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[] };
 
 /* ---------- row <-> app object mappers ---------- */
 function contactFromRow(r){
@@ -37,6 +38,17 @@ function listingToRow(l){
 function listingInterestFromRow(r){
   return { id:r.id, listingId:r.listing_id, contactId:r.contact_id, notes:r.notes||'', createdAt:r.created_at };
 }
+function todoFromRow(r){
+  return { id:r.id, userId:r.user_id, title:r.title, dueDate:r.due_date||'', done:!!r.done, createdAt:r.created_at };
+}
+function goalFromRow(r){
+  return { id:r.id, label:r.label, metric:r.metric||'Custom', period:r.period||'Weekly', target:r.target||0,
+    manualProgress:r.manual_progress||0, ownerEmail:r.owner_email||'', createdAt:r.created_at };
+}
+function goalToRow(g){
+  return { label:g.label, metric:g.metric||'Custom', period:g.period||'Weekly', target:Number(g.target)||0,
+    manual_progress:Number(g.manualProgress)||0, owner_email:g.ownerEmail||null };
+}
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
     commissionPct:r.commission_pct||0, stage:r.stage, closeDate:r.close_date||'', contactId:r.contact_id||null,
@@ -62,6 +74,8 @@ const PROPERTY_TYPES = ['Office','Industrial','Retail','Multifamily','Land','Mix
 const TRANSACTION_TYPES = ['Lease','Sale','Buyer','Tenant','Both'];
 const LISTING_TYPES = ['Lease','Sale'];
 const LISTING_STATUSES = ['Active','Under Contract','Expired','Withdrawn','Off Market'];
+const GOAL_METRICS = ['Calls Logged','New Listings','Deals Closed','Custom'];
+const GOAL_PERIODS = ['Daily','Weekly','Monthly'];
 
 /* ---------- helpers ---------- */
 function money(n){
@@ -102,6 +116,49 @@ function isPastOrToday(d){
   if(!d) return false;
   const a = new Date(d); a.setHours(23,59,59,999);
   return a.getTime() <= new Date().setHours(23,59,59,999);
+}
+function daysUntil(d){
+  if(!d) return null;
+  const target = new Date(d); target.setHours(0,0,0,0);
+  const now = new Date(); now.setHours(0,0,0,0);
+  return Math.round((target - now) / 86400000);
+}
+function periodRange(period){
+  const now = new Date();
+  if(period==='Daily'){
+    const start = new Date(now); start.setHours(0,0,0,0);
+    const end = new Date(now); end.setHours(23,59,59,999);
+    return { start, end };
+  }
+  if(period==='Weekly'){
+    const start = new Date(now);
+    const day = start.getDay();
+    const diff = (day===0 ? -6 : 1) - day;
+    start.setDate(start.getDate()+diff); start.setHours(0,0,0,0);
+    const end = new Date(start); end.setDate(end.getDate()+6); end.setHours(23,59,59,999);
+    return { start, end };
+  }
+  if(period==='Monthly'){
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth()+1, 0, 23,59,59,999);
+    return { start, end };
+  }
+  return { start:new Date(0), end:new Date(8640000000000000) };
+}
+function computeGoalProgress(goal){
+  if(goal.metric==='Custom') return Number(goal.manualProgress)||0;
+  const { start, end } = periodRange(goal.period);
+  const inRange = (d) => { const t = new Date(d).getTime(); return t>=start.getTime() && t<=end.getTime(); };
+  if(goal.metric==='Calls Logged'){
+    return state.calls.filter(c => c.loggedBy===goal.ownerEmail && inRange(c.timestamp)).length;
+  }
+  if(goal.metric==='New Listings'){
+    return state.listings.filter(l => l.ownerEmail===goal.ownerEmail && inRange(l.createdAt)).length;
+  }
+  if(goal.metric==='Deals Closed'){
+    return state.deals.filter(d => d.ownerEmail===goal.ownerEmail && d.stage==='Closed Won' && inRange(d.updatedAt)).length;
+  }
+  return 0;
 }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function contactById(id){ return state.contacts.find(c=>c.id===id); }
@@ -148,8 +205,17 @@ async function loadAllData(){
   listingsSchemaReady = !listingsRes.error && !interestsRes.error;
   state.listings = listingsSchemaReady ? (listingsRes.data||[]).map(listingFromRow) : [];
   state.listingInterests = listingsSchemaReady ? (interestsRes.data||[]).map(listingInterestFromRow) : [];
+
+  const [todosRes, goalsRes] = await Promise.all([
+    supabaseClient.from('todos').select('*').order('due_date',{ascending:true, nullsFirst:false}),
+    supabaseClient.from('goals').select('*').order('created_at',{ascending:false}),
+  ]);
+  todosGoalsSchemaReady = !todosRes.error && !goalsRes.error;
+  state.todos = todosGoalsSchemaReady ? (todosRes.data||[]).map(todoFromRow) : [];
+  state.goals = todosGoalsSchemaReady ? (goalsRes.data||[]).map(goalFromRow) : [];
   return true;
 }
+let todosGoalsSchemaReady = true;
 let listingsSchemaReady = true;
 
 async function logActivity(type, description, contactId, dealId){
@@ -171,6 +237,8 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'activities' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'listings' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'listing_interests' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'todos' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'goals' }, onRemoteChange)
     .subscribe();
 }
 function onRemoteChange(){
@@ -292,7 +360,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, activity: renderActivity };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, goals: renderGoals, activity: renderActivity };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -307,6 +375,26 @@ window.addEventListener('hashchange', navigate);
 document.getElementById('todayLabel').textContent = new Date().toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric', year:'numeric'});
 
 /* ---------- Dashboard ---------- */
+function todoItemHtml(item){
+  const dLeft = item.dueDate ? daysUntil(item.dueDate) : null;
+  const overdue = dLeft!==null && dLeft<0;
+  const dueLabel = item.dueDate ? (dLeft===0?'Today':overdue?`${Math.abs(dLeft)}d overdue`:fmtDate(item.dueDate)) : '';
+  if(item.kind==='todo'){
+    return `<div class="todo-row" data-kind="todo" data-id="${item.id}">
+      <input type="checkbox" class="todo-check">
+      <span class="todo-label">${esc(item.label)}</span>
+      ${dueLabel? `<span class="todo-due ${overdue?'overdue':''}">${esc(dueLabel)}</span>`:''}
+      <button class="icon-btn todo-del" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+    </div>`;
+  }
+  const icon = item.kind==='callback' ? '📞' : '🏢';
+  return `<div class="todo-row" data-kind="${item.kind}" data-id="${item.id}">
+    <span class="todo-icon">${icon}</span>
+    <span class="todo-label">${esc(item.label)}</span>
+    <span class="todo-due ${overdue?'overdue':''}">${esc(dueLabel)}</span>
+  </div>`;
+}
+
 function renderDashboard(){
   const view = document.getElementById('view');
   view.className = 'view';
@@ -321,10 +409,33 @@ function renderDashboard(){
   const dueContacts = state.contacts.filter(c=>c.status!=='Client' && c.status!=='Dead' && c.nextFollowUp && isPastOrToday(c.nextFollowUp))
     .sort((a,b)=>new Date(a.nextFollowUp)-new Date(b.nextFollowUp)).slice(0,6);
 
+  const myTodos = state.todos.filter(t=>!t.done);
+  const myCallbacks = state.contacts.filter(c=>c.ownerEmail===currentUserEmail() && c.nextFollowUp && daysUntil(c.nextFollowUp)<=3);
+  const myExpiring = state.listings.filter(l=>(l.ownerEmail===currentUserEmail()||(l.brokerEmails||[]).includes(currentUserEmail())) && l.expirationDate && daysUntil(l.expirationDate)<=14);
+  const todoItems = [
+    ...myTodos.map(t=>({ kind:'todo', id:t.id, label:t.title, dueDate:t.dueDate, sortDate:t.dueDate||'9999-99-99' })),
+    ...myCallbacks.map(c=>({ kind:'callback', id:c.id, label:`Call back: ${c.name}`, dueDate:c.nextFollowUp, sortDate:c.nextFollowUp })),
+    ...myExpiring.map(l=>({ kind:'listing', id:l.id, label:`Listing expiring: ${l.address}`, dueDate:l.expirationDate, sortDate:l.expirationDate })),
+  ].sort((a,b)=> (a.sortDate||'9999').localeCompare(b.sortDate||'9999'));
+
   view.innerHTML = `
     <div class="page-head">
       <div><h1>Dashboard</h1><p>Your team's book of business at a glance</p></div>
       <a href="#coldcall" class="btn gold">Start Cold Calling</a>
+    </div>
+    <div class="panel" style="margin-bottom:20px;">
+      <div class="panel-head"><h3>My To-Do</h3><span class="cell-sub">${myTodos.length} task${myTodos.length===1?'':'s'} · ${todoItems.length-myTodos.length} reminder${(todoItems.length-myTodos.length)===1?'':'s'}</span></div>
+      <div class="panel-body">
+        ${!todosGoalsSchemaReady ? `<div class="empty">Run <code>schema_v5.sql</code> to enable your personal to-do list.</div>` : `
+        <div id="myTodoList" class="todo-list">
+          ${todoItems.length? todoItems.map(todoItemHtml).join('') : '<div class="empty">Nothing on your list — add something below.</div>'}
+        </div>
+        <div class="todo-add-row">
+          <input type="text" id="newTodoText" placeholder="Add a to-do…">
+          <input type="date" id="newTodoDate" title="Optional due date">
+          <button class="btn gold sm" id="addTodoBtn">Add</button>
+        </div>`}
+      </div>
     </div>
     <div class="stat-grid">
       <div class="stat-card accent-blue"><div class="label">Total Prospects</div><div class="value">${state.contacts.length}</div><div class="sub">${state.contacts.filter(c=>c.status==='Client').length} clients</div></div>
@@ -367,6 +478,43 @@ function renderDashboard(){
       <div class="row-list">${closedWonThisMonth.map(d=>`<div class="row-item"><div class="avatar" style="background:var(--teal)">$</div><div class="row-main"><div class="row-title">${esc(d.title)}</div><div class="row-sub">${esc(d.propertyAddress||'')}</div></div><div class="row-meta">${fullMoney(d.value)}</div></div>`).join('')}</div>
     </div></div>` : ''}
   `;
+
+  if(todosGoalsSchemaReady){
+    document.querySelectorAll('#myTodoList .todo-row').forEach(row=>{
+      const kind = row.dataset.kind, id = row.dataset.id;
+      if(kind==='todo'){
+        row.querySelector('.todo-check').onchange = async ()=>{
+          const { error } = await supabaseClient.from('todos').update({ done:true }).eq('id', id);
+          if(error){ toast('Failed: '+error.message); return; }
+          await loadAllData(); renderDashboard();
+        };
+        row.querySelector('.todo-del').onclick = async ()=>{
+          const { error } = await supabaseClient.from('todos').delete().eq('id', id);
+          if(error){ toast('Failed: '+error.message); return; }
+          await loadAllData(); renderDashboard();
+        };
+      } else if(kind==='callback'){
+        row.onclick = ()=>{ coldCallActiveId = id; location.hash = '#coldcall'; };
+      } else if(kind==='listing'){
+        row.onclick = ()=>openListingModal(listingById(id));
+      }
+    });
+    document.getElementById('addTodoBtn').onclick = async ()=>{
+      const textEl = document.getElementById('newTodoText');
+      const title = textEl.value.trim();
+      if(!title) return;
+      const dueDate = document.getElementById('newTodoDate').value || null;
+      const btn = document.getElementById('addTodoBtn');
+      btn.disabled = true;
+      const { error } = await supabaseClient.from('todos').insert({ user_id: currentUserId(), title, due_date: dueDate });
+      if(error){ toast('Failed to add: '+error.message); btn.disabled=false; return; }
+      await loadAllData();
+      renderDashboard();
+    };
+    document.getElementById('newTodoText').addEventListener('keydown', e=>{
+      if(e.key==='Enter') document.getElementById('addTodoBtn').click();
+    });
+  }
 }
 
 /* ---------- Prospects ---------- */
@@ -606,6 +754,27 @@ function openContactModal(contact){
 }
 
 /* ---------- Cold Call ---------- */
+function myCallGoals(){
+  return state.goals.filter(g=>g.ownerEmail===currentUserEmail() && g.metric==='Calls Logged' && (g.period==='Daily'||g.period==='Weekly'));
+}
+function callGoalWidgetHtml(){
+  if(!todosGoalsSchemaReady) return '';
+  const goals = myCallGoals();
+  if(!goals.length){
+    return `<div class="panel" style="margin-bottom:16px;">
+      <div class="panel-body" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <div class="cell-sub">Set a daily or weekly call goal to track your progress here.</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="number" id="quickCallGoal" placeholder="e.g. 20" style="width:90px;">
+          <select id="quickCallPeriod"><option>Daily</option><option>Weekly</option></select>
+          <button class="btn outline sm" id="quickCallGoalBtn">Set Goal</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `<div class="stat-grid" style="margin-bottom:16px;">${goals.map(goalCardHtml).join('')}</div>`;
+}
+
 function renderColdCall(){
   const view = document.getElementById('view');
   view.className = 'view';
@@ -628,6 +797,7 @@ function renderColdCall(){
       <div><h1>Cold Call</h1><p>${queue.length} prospects in your calling queue</p></div>
       <button class="btn gold" id="addContactBtn2">+ Add Prospect</button>
     </div>
+    ${callGoalWidgetHtml()}
     <div class="coldcall-wrap">
       <div class="panel">
         <div class="panel-head"><h3>Queue</h3></div>
@@ -652,6 +822,25 @@ function renderColdCall(){
   view.querySelectorAll('.queue-item').forEach(el=>{
     el.onclick = ()=>{ coldCallActiveId = el.dataset.id; renderColdCall(); };
   });
+  if(todosGoalsSchemaReady){
+    if(myCallGoals().length){
+      wireGoalCards(renderColdCall);
+    } else {
+      const quickBtn = document.getElementById('quickCallGoalBtn');
+      if(quickBtn) quickBtn.onclick = async ()=>{
+        const target = Number(document.getElementById('quickCallGoal').value)||0;
+        if(!target){ toast('Enter a target number first'); return; }
+        const period = document.getElementById('quickCallPeriod').value;
+        const { error } = await supabaseClient.from('goals').insert(goalToRow({
+          label: `${period} Call Goal`, metric:'Calls Logged', period, target, manualProgress:0, ownerEmail: currentUserEmail(),
+        }));
+        if(error){ toast('Failed: '+error.message); return; }
+        await loadAllData();
+        toast('Goal set');
+        renderColdCall();
+      };
+    }
+  }
   renderCallPanel(queue);
 }
 
@@ -1370,6 +1559,164 @@ function openEmailComposer(contact, listing){
     const subject = encodeURIComponent(root.querySelector('#e_subject').value);
     const body = encodeURIComponent(root.querySelector('#e_body').value);
     window.location.href = `mailto:${to}?subject=${subject}&body=${body}`;
+  };
+}
+
+/* ---------- Goals ---------- */
+function goalCardHtml(goal){
+  const progress = computeGoalProgress(goal);
+  const target = Number(goal.target)||0;
+  const pct = target>0 ? Math.min(100, Math.round(progress/target*100)) : 0;
+  const complete = target>0 && progress>=target;
+  return `
+    <div class="goal-card" data-id="${goal.id}">
+      <div class="gh"><span>${esc(goal.label)}</span><span class="gv">${Math.round(progress*100)/100} / ${target}</span></div>
+      <div class="cell-sub">${esc(goal.metric)}${goal.metric!=='Custom'?' · '+esc(goal.period):''}</div>
+      <div class="goal-bar-track"><div class="goal-bar-fill ${complete?'complete':''}" style="width:${pct}%;"></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+        <span class="owner-tag"><span class="owner-dot">${esc(initials(ownerLabel(goal.ownerEmail)))}</span>${esc(ownerLabel(goal.ownerEmail))}</span>
+        <div class="actions-cell">
+          ${goal.metric==='Custom'? `<button class="icon-btn goalMinus" title="-1"><svg viewBox="0 0 24 24"><path d="M5 11h14v2H5z"/></svg></button><button class="icon-btn goalPlus" title="+1"><svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg></button>`:''}
+          <button class="icon-btn goalEdit" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+          <button class="icon-btn goalDel" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireGoalCards(afterChange){
+  document.querySelectorAll('.goal-card').forEach(card=>{
+    const id = card.dataset.id;
+    const goal = state.goals.find(g=>g.id===id);
+    if(!goal) return;
+    card.querySelector('.goalEdit').onclick = ()=>openGoalModal(goal);
+    card.querySelector('.goalDel').onclick = async ()=>{
+      if(confirm('Delete this goal?')){
+        const { error } = await supabaseClient.from('goals').delete().eq('id', id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData(); toast('Goal deleted'); afterChange();
+      }
+    };
+    const plus = card.querySelector('.goalPlus');
+    const minus = card.querySelector('.goalMinus');
+    if(plus) plus.onclick = async ()=>{
+      const { error } = await supabaseClient.from('goals').update({ manual_progress: (Number(goal.manualProgress)||0)+1 }).eq('id', id);
+      if(error){ toast('Failed: '+error.message); return; }
+      await loadAllData(); afterChange();
+    };
+    if(minus) minus.onclick = async ()=>{
+      const { error } = await supabaseClient.from('goals').update({ manual_progress: Math.max(0,(Number(goal.manualProgress)||0)-1) }).eq('id', id);
+      if(error){ toast('Failed: '+error.message); return; }
+      await loadAllData(); afterChange();
+    };
+  });
+}
+
+function renderGoals(){
+  const view = document.getElementById('view');
+  view.className = 'view';
+  if(!todosGoalsSchemaReady){
+    view.innerHTML = `<div class="panel"><div class="panel-body">
+      <h3 style="margin-top:0;">Setup needed</h3>
+      <p style="color:var(--text-dim);font-size:13.5px;">Goals need one more database update. Run <code>schema_v5.sql</code> in your Supabase project's SQL editor, then reload this page.</p>
+    </div></div>`;
+    return;
+  }
+  const mine = state.goals.filter(g=>g.ownerEmail===currentUserEmail());
+  const others = state.goals.filter(g=>g.ownerEmail!==currentUserEmail());
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Goals</h1><p>${state.goals.length} goal${state.goals.length===1?'':'s'} tracked across the team</p></div>
+      <button class="btn gold" id="addGoalBtn">+ Add Goal</button>
+    </div>
+    ${mine.length? `<h3 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px;">My Goals</h3><div class="stat-grid" style="margin-bottom:24px;">${mine.map(goalCardHtml).join('')}</div>`:''}
+    ${others.length? `<h3 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px;">Team Goals</h3><div class="stat-grid">${others.map(goalCardHtml).join('')}</div>`:''}
+    ${!state.goals.length? `<div class="panel"><div class="panel-body"><div class="empty">No goals yet. Set one to start tracking progress.</div></div></div>`:''}
+  `;
+  document.getElementById('addGoalBtn').onclick = ()=>openGoalModal();
+  wireGoalCards(renderGoals);
+}
+
+function openGoalModal(goal){
+  const isEdit = !!goal;
+  const g = goal || { label:'', metric:'Calls Logged', period:'Daily', target:10, manualProgress:0, ownerEmail:currentUserEmail() };
+  const staffOptions = (selected) => {
+    const emails = knownStaffEmails();
+    if(selected && !emails.includes(selected)) emails.push(selected);
+    return emails.map(e=>`<option value="${esc(e)}" ${e===selected?'selected':''}>${esc(ownerLabel(e))}</option>`).join('');
+  };
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>${isEdit?'Edit Goal':'Add Goal'}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <label class="full">Label<input type="text" id="g_label" value="${esc(g.label)}" placeholder="e.g. Cold calls per day"></label>
+            <label>Metric<select id="g_metric">${GOAL_METRICS.map(m=>`<option ${m===g.metric?'selected':''}>${m}</option>`).join('')}</select></label>
+            <label id="g_period_wrap">Period<select id="g_period">${GOAL_PERIODS.map(p=>`<option ${p===g.period?'selected':''}>${p}</option>`).join('')}</select></label>
+            <label>Target<input type="number" id="g_target" value="${g.target}" placeholder="20"></label>
+            <label id="g_manual_wrap" style="${g.metric==='Custom'?'':'display:none;'}">Current Progress<input type="number" id="g_manual" value="${g.manualProgress}"></label>
+            <label class="full">Whose goal<select id="g_owner">${staffOptions(g.ownerEmail)}</select></label>
+          </div>
+        </div>
+        <div class="modal-foot">
+          ${isEdit? '<button class="btn danger" id="deleteGoalBtn" style="margin-right:auto;">Delete</button>':''}
+          <button class="btn outline" id="cancelBtn">Cancel</button>
+          <button class="btn gold" id="saveGoalBtn">${isEdit?'Save Changes':'Add Goal'}</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  const metricSel = root.querySelector('#g_metric');
+  const periodWrap = root.querySelector('#g_period_wrap');
+  const manualWrap = root.querySelector('#g_manual_wrap');
+  periodWrap.style.display = g.metric==='Custom' ? 'none' : '';
+  metricSel.addEventListener('change', ()=>{
+    const isCustom = metricSel.value==='Custom';
+    periodWrap.style.display = isCustom? 'none':'';
+    manualWrap.style.display = isCustom? '':'none';
+  });
+  if(isEdit){
+    root.querySelector('#deleteGoalBtn').onclick = async ()=>{
+      if(confirm('Delete this goal?')){
+        const { error } = await supabaseClient.from('goals').delete().eq('id', g.id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData(); toast('Goal deleted'); close(); navigate();
+      }
+    };
+  }
+  root.querySelector('#saveGoalBtn').onclick = async ()=>{
+    const label = root.querySelector('#g_label').value.trim();
+    if(!label){ toast('Label is required'); return; }
+    const data = {
+      label,
+      metric: metricSel.value,
+      period: root.querySelector('#g_period').value,
+      target: Number(root.querySelector('#g_target').value)||0,
+      manualProgress: Number(root.querySelector('#g_manual').value)||0,
+      ownerEmail: root.querySelector('#g_owner').value,
+    };
+    const btn = root.querySelector('#saveGoalBtn');
+    btn.disabled = true;
+    if(isEdit){
+      const { error } = await supabaseClient.from('goals').update(goalToRow(data)).eq('id', g.id);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      toast('Goal updated');
+    } else {
+      const { error } = await supabaseClient.from('goals').insert(goalToRow(data));
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      toast('Goal added');
+    }
+    await loadAllData();
+    close();
+    if(document.getElementById('addGoalBtn')) renderGoals();
+    if(location.hash==='#coldcall') renderColdCall();
   };
 }
 

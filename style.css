@@ -271,6 +271,28 @@ textarea{width:100%;resize:vertical;min-height:70px;}
 .property-detail-grid .iv{font-size:13.5px;margin-top:2px;font-weight:600;}
 .table-group-row td{background:var(--slate-100);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text-dim);padding:8px 16px;}
 
+/* To-Do panel */
+.todo-list{display:flex;flex-direction:column;gap:0;margin-bottom:14px;max-height:340px;overflow-y:auto;}
+.todo-row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--slate-100);font-size:13.5px;}
+.todo-row:last-child{border-bottom:none;}
+.todo-row .todo-check{width:16px;height:16px;flex-shrink:0;accent-color:var(--red);}
+.todo-icon{font-size:15px;flex-shrink:0;}
+.todo-label{flex:1;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.todo-due{font-size:11.5px;color:var(--text-dim);white-space:nowrap;flex-shrink:0;}
+.todo-due.overdue{color:var(--red);font-weight:700;}
+.todo-row[data-kind="callback"],.todo-row[data-kind="listing"]{cursor:pointer;}
+.todo-row[data-kind="callback"]:hover,.todo-row[data-kind="listing"]:hover{background:var(--bg);}
+.todo-add-row{display:flex;gap:8px;padding-top:10px;border-top:1px solid var(--border);}
+.todo-add-row input[type=text]{flex:1;}
+
+/* Goal progress bars */
+.goal-bar-track{background:var(--slate-100);border-radius:20px;height:8px;overflow:hidden;margin-top:6px;}
+.goal-bar-fill{background:var(--red);height:100%;border-radius:20px;transition:width .3s;}
+.goal-bar-fill.complete{background:var(--teal);}
+.goal-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);}
+.goal-card .gh{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:700;margin-bottom:2px;}
+.goal-card .gh .gv{font-size:12.5px;color:var(--text-dim);font-weight:600;}
+
 .toast{position:fixed;bottom:22px;right:22px;background:var(--navy-950);color:#fff;padding:11px 18px;border-radius:9px;font-size:13px;box-shadow:var(--shadow);z-index:200;opacity:0;transform:translateY(10px);transition:opacity .18s,transform .18s;}
 .toast.show{opacity:1;transform:translateY(0);}
 
