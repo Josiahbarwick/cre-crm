@@ -457,7 +457,7 @@ function renderProspectsTable(){
     if(typeF && c.propertyType!==typeF) return false;
     if(txnF==='Unspecified' && c.transactionType) return false;
     if(txnF && txnF!=='Unspecified' && c.transactionType!==txnF) return false;
-    if(q && !(`${c.name} ${c.company} ${c.email}`.toLowerCase().includes(q))) return false;
+    if(q && !(`${c.name} ${c.company} ${c.email} ${c.address}`.toLowerCase().includes(q))) return false;
     return true;
   }).sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
 
@@ -602,7 +602,7 @@ function renderColdCall(){
   view.className = 'view';
   const q = currentSearch.toLowerCase();
   let queue = state.contacts.filter(c=>c.status!=='Client' && c.status!=='Dead');
-  if(q) queue = queue.filter(c=>`${c.name} ${c.company}`.toLowerCase().includes(q));
+  if(q) queue = queue.filter(c=>`${c.name} ${c.company} ${c.address}`.toLowerCase().includes(q));
   queue.sort((a,b)=>{
     const aDue = a.nextFollowUp && isPastOrToday(a.nextFollowUp);
     const bDue = b.nextFollowUp && isPastOrToday(b.nextFollowUp);
