@@ -1478,7 +1478,7 @@ function renderAuthScreen(mode){
   root.innerHTML = `
     <div class="auth-wrap">
       <div class="auth-card">
-        <div class="auth-brand"><div class="brand-mark">NP</div><div class="brand-name">NAI Pfefferle<span>CRM</span></div></div>
+        <div class="auth-brand"><img src="logo.svg" alt="NAI Pfefferle" class="auth-logo"><span class="brand-suffix">CRM</span></div>
         <h2>${mode==='signup' ? 'Create your account' : 'Sign in'}</h2>
         <p>${mode==='signup' ? "Set up your own login for your team's shared CRM." : 'Shared CRM for the team — sign in with your account.'}</p>
         <div class="auth-error" id="authError"></div>
