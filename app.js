@@ -74,7 +74,7 @@ const PROPERTY_TYPES = ['Office','Industrial','Retail','Multifamily','Land','Mix
 const TRANSACTION_TYPES = ['Lease','Sale','Buyer','Tenant','Both'];
 const LISTING_TYPES = ['Lease','Sale'];
 const LISTING_STATUSES = ['Active','Under Contract','Expired','Withdrawn','Off Market'];
-const GOAL_METRICS = ['Calls Logged','New Listings','Deals Closed','Custom'];
+const GOAL_METRICS = ['Calls Logged','New Listings','Deals Closed','Commission Earned','Custom'];
 const GOAL_PERIODS = ['Daily','Weekly','Monthly'];
 
 /* ---------- helpers ---------- */
@@ -158,7 +158,41 @@ function computeGoalProgress(goal){
   if(goal.metric==='Deals Closed'){
     return state.deals.filter(d => d.ownerEmail===goal.ownerEmail && d.stage==='Closed Won' && inRange(d.updatedAt)).length;
   }
+  if(goal.metric==='Commission Earned'){
+    return state.deals.filter(d => d.ownerEmail===goal.ownerEmail && d.stage==='Closed Won' && inRange(d.updatedAt))
+      .reduce((s,d)=> s + dealCommission(d), 0);
+  }
   return 0;
+}
+function dealCommission(d){ return (Number(d.value)||0) * ((Number(d.commissionPct)||0)/100); }
+function niceMax(n){
+  if(n<=0) return 10;
+  const mag = Math.pow(10, Math.floor(Math.log10(n)));
+  const norm = n / mag;
+  const step = norm<=1?1:norm<=2?2:norm<=5?5:10;
+  return step * mag;
+}
+function computeEarningsSeries(goal){
+  const { start, end } = periodRange(goal.period);
+  const cappedEnd = new Date(Math.min(end.getTime(), Date.now()));
+  const dayMs = 86400000;
+  const deals = state.deals.filter(d=>d.ownerEmail===goal.ownerEmail && d.stage==='Closed Won')
+    .map(d=>({ date: new Date(d.updatedAt), amount: dealCommission(d) }))
+    .filter(d=> d.date.getTime()>=start.getTime() && d.date.getTime()<=cappedEnd.getTime())
+    .sort((a,b)=>a.date-b.date);
+  const totalDays = Math.max(1, Math.round((cappedEnd-start)/dayMs));
+  const points = [];
+  let cumulative = 0, dealIdx = 0;
+  for(let i=0;i<=totalDays;i++){
+    const dayStart = new Date(start.getTime() + i*dayMs);
+    const dayEnd = new Date(dayStart.getTime() + dayMs - 1);
+    while(dealIdx < deals.length && deals[dealIdx].date.getTime()<=dayEnd.getTime()){
+      cumulative += deals[dealIdx].amount;
+      dealIdx++;
+    }
+    points.push({ date: dayStart, value: cumulative });
+  }
+  return points;
 }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function contactById(id){ return state.contacts.find(c=>c.id===id); }
@@ -1563,6 +1597,123 @@ function openEmailComposer(contact, listing){
 }
 
 /* ---------- Goals ---------- */
+function smoothLinePath(pts){
+  if(!pts.length) return '';
+  if(pts.length===1) return `M ${pts[0].x} ${pts[0].y} L ${pts[0].x} ${pts[0].y}`;
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for(let i=0;i<pts.length-1;i++){
+    const xc = (pts[i].x+pts[i+1].x)/2;
+    const yc = (pts[i].y+pts[i+1].y)/2;
+    d += ` Q ${pts[i].x} ${pts[i].y} ${xc} ${yc}`;
+  }
+  const last = pts[pts.length-1];
+  d += ` L ${last.x} ${last.y}`;
+  return d;
+}
+
+const CHART_VW=640, CHART_VH=220, CHART_ML=58, CHART_MR=16, CHART_MT=24, CHART_MB=28;
+
+function moneyGoalChartHtml(goal){
+  const points = computeEarningsSeries(goal);
+  const target = Number(goal.target)||0;
+  const current = points.length ? points[points.length-1].value : 0;
+  const maxVal = Math.max(target, ...points.map(p=>p.value), 1);
+  const yMax = niceMax(maxVal*1.05);
+  const PW = CHART_VW-CHART_ML-CHART_MR, PH = CHART_VH-CHART_MT-CHART_MB;
+  const n = points.length;
+  const xAt = i => CHART_ML + (n>1 ? (i/(n-1))*PW : PW/2);
+  const yAt = v => CHART_MT + PH - (v/yMax)*PH;
+  const coords = points.map((p,i)=>({ x:xAt(i), y:yAt(p.value) }));
+  const linePath = smoothLinePath(coords);
+  const areaPath = coords.length ? `${linePath} L ${coords[coords.length-1].x} ${CHART_MT+PH} L ${coords[0].x} ${CHART_MT+PH} Z` : '';
+  const targetY = yAt(Math.min(target, yMax));
+  const gradId = 'mgGrad'+goal.id.replace(/[^a-zA-Z0-9]/g,'');
+  const gridLines = [0,0.25,0.5,0.75,1].map(f=>{
+    const v = yMax*f, y = yAt(v);
+    return `<line x1="${CHART_ML}" y1="${y}" x2="${CHART_VW-CHART_MR}" y2="${y}" stroke="var(--slate-100)" stroke-width="1"/>
+      <text x="${CHART_ML-8}" y="${y+4}" text-anchor="end" font-size="10" fill="var(--text-dim)">${money(v)}</text>`;
+  }).join('');
+  const last = coords[coords.length-1];
+  const pct = target>0 ? Math.min(100, Math.round(current/target*100)) : 0;
+  const dateLabel = d => d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  return `
+    <div class="goal-card money-goal-card" data-id="${goal.id}">
+      <div class="gh"><span>${esc(goal.label)}</span><span class="gv">${fullMoney(current)} / ${fullMoney(target)} <span style="${pct>=100?'color:var(--teal);font-weight:800;':''}">(${pct}%)</span></span></div>
+      <div class="cell-sub" style="margin-bottom:8px;display:flex;align-items:center;gap:6px;">${esc(goal.metric)} · ${esc(goal.period)} <span class="owner-tag"><span class="owner-dot">${esc(initials(ownerLabel(goal.ownerEmail)))}</span>${esc(ownerLabel(goal.ownerEmail))}</span></div>
+      <div class="money-chart-wrap" data-id="${goal.id}">
+        <svg viewBox="0 0 ${CHART_VW} ${CHART_VH}" class="money-chart-svg" style="width:100%;height:auto;display:block;">
+          <defs>
+            <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="var(--red)" stop-opacity="0.22"/>
+              <stop offset="100%" stop-color="var(--red)" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          ${gridLines}
+          ${target>0? `<line x1="${CHART_ML}" y1="${targetY}" x2="${CHART_VW-CHART_MR}" y2="${targetY}" stroke="var(--navy-950)" stroke-width="1.5" stroke-dasharray="5,4"/>
+            <text x="${CHART_VW-CHART_MR}" y="${targetY-6}" text-anchor="end" font-size="10" font-weight="700" fill="var(--navy-950)">Goal ${money(target)}</text>`:''}
+          ${areaPath? `<path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>`:''}
+          ${linePath? `<path d="${linePath}" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`:''}
+          ${last? `<circle cx="${last.x}" cy="${last.y}" r="5" fill="var(--red)" stroke="#fff" stroke-width="2"/>
+            <text x="${Math.min(last.x, CHART_VW-CHART_MR-70)}" y="${Math.max(last.y-12, CHART_MT+10)}" font-size="11" font-weight="800" fill="var(--text)">${money(current)}</text>`:''}
+          <line class="crosshair" x1="0" y1="${CHART_MT}" x2="0" y2="${CHART_MT+PH}" stroke="var(--slate-400)" stroke-width="1" style="display:none;"/>
+          <text x="${CHART_ML}" y="${CHART_VH-8}" font-size="10" fill="var(--text-dim)">${points.length?dateLabel(points[0].date):''}</text>
+          <text x="${CHART_VW-CHART_MR}" y="${CHART_VH-8}" text-anchor="end" font-size="10" fill="var(--text-dim)">${points.length?dateLabel(points[points.length-1].date):''}</text>
+        </svg>
+        <div class="money-chart-tooltip" style="display:none;"></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:8px;">
+        <button class="icon-btn goalEdit" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+        <button class="icon-btn goalDel" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+      </div>
+    </div>
+  `;
+}
+
+function wireMoneyGoalCharts(afterChange){
+  document.querySelectorAll('.money-goal-card').forEach(card=>{
+    const id = card.dataset.id;
+    const goal = state.goals.find(g=>g.id===id);
+    if(!goal) return;
+    card.querySelector('.goalEdit').onclick = ()=>openGoalModal(goal);
+    card.querySelector('.goalDel').onclick = async ()=>{
+      if(confirm('Delete this goal?')){
+        const { error } = await supabaseClient.from('goals').delete().eq('id', id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData(); toast('Goal deleted'); afterChange();
+      }
+    };
+  });
+  document.querySelectorAll('.money-chart-wrap').forEach(wrap=>{
+    const goalId = wrap.dataset.id;
+    const goal = state.goals.find(g=>g.id===goalId);
+    if(!goal) return;
+    const points = computeEarningsSeries(goal);
+    if(!points.length) return;
+    const svg = wrap.querySelector('.money-chart-svg');
+    const crosshair = svg.querySelector('.crosshair');
+    const tooltip = wrap.querySelector('.money-chart-tooltip');
+    const PW = CHART_VW-CHART_ML-CHART_MR;
+    const n = points.length;
+    svg.addEventListener('mousemove', e=>{
+      const rect = svg.getBoundingClientRect();
+      const svgX = (e.clientX - rect.left) * (CHART_VW/rect.width);
+      let idx = Math.round(((svgX-CHART_ML)/PW) * (n-1));
+      idx = Math.max(0, Math.min(n-1, idx));
+      const p = points[idx];
+      const x = CHART_ML + (n>1 ? (idx/(n-1))*PW : PW/2);
+      crosshair.setAttribute('x1', x); crosshair.setAttribute('x2', x);
+      crosshair.style.display = '';
+      tooltip.style.display = '';
+      tooltip.style.left = (x/CHART_VW*100)+'%';
+      tooltip.textContent = `${p.date.toLocaleDateString('en-US',{month:'short',day:'numeric'})}: ${fullMoney(p.value)}`;
+    });
+    svg.addEventListener('mouseleave', ()=>{
+      crosshair.style.display = 'none';
+      tooltip.style.display = 'none';
+    });
+  });
+}
+
 function goalCardHtml(goal){
   const progress = computeGoalProgress(goal);
   const target = Number(goal.target)||0;
@@ -1586,7 +1737,7 @@ function goalCardHtml(goal){
 }
 
 function wireGoalCards(afterChange){
-  document.querySelectorAll('.goal-card').forEach(card=>{
+  document.querySelectorAll('.goal-card:not(.money-goal-card)').forEach(card=>{
     const id = card.dataset.id;
     const goal = state.goals.find(g=>g.id===id);
     if(!goal) return;
@@ -1625,17 +1776,26 @@ function renderGoals(){
   }
   const mine = state.goals.filter(g=>g.ownerEmail===currentUserEmail());
   const others = state.goals.filter(g=>g.ownerEmail!==currentUserEmail());
+  const sectionHtml = (title, goals) => {
+    if(!goals.length) return '';
+    const money = goals.filter(g=>g.metric==='Commission Earned');
+    const rest = goals.filter(g=>g.metric!=='Commission Earned');
+    return `<h3 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px;">${title}</h3>
+      ${money.length? `<div class="money-goals-list">${money.map(moneyGoalChartHtml).join('')}</div>`:''}
+      ${rest.length? `<div class="stat-grid" style="margin-bottom:24px;">${rest.map(goalCardHtml).join('')}</div>`:''}`;
+  };
   view.innerHTML = `
     <div class="page-head">
       <div><h1>Goals</h1><p>${state.goals.length} goal${state.goals.length===1?'':'s'} tracked across the team</p></div>
       <button class="btn gold" id="addGoalBtn">+ Add Goal</button>
     </div>
-    ${mine.length? `<h3 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px;">My Goals</h3><div class="stat-grid" style="margin-bottom:24px;">${mine.map(goalCardHtml).join('')}</div>`:''}
-    ${others.length? `<h3 style="font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px;">Team Goals</h3><div class="stat-grid">${others.map(goalCardHtml).join('')}</div>`:''}
+    ${sectionHtml('My Goals', mine)}
+    ${sectionHtml('Team Goals', others)}
     ${!state.goals.length? `<div class="panel"><div class="panel-body"><div class="empty">No goals yet. Set one to start tracking progress.</div></div></div>`:''}
   `;
   document.getElementById('addGoalBtn').onclick = ()=>openGoalModal();
   wireGoalCards(renderGoals);
+  wireMoneyGoalCharts(renderGoals);
 }
 
 function openGoalModal(goal){
