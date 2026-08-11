@@ -5,20 +5,35 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let currentUser = null;
 function currentUserEmail(){ return (currentUser && currentUser.email) || ''; }
 
-let state = { contacts:[], deals:[], calls:[], activities:[] };
+let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[] };
 
 /* ---------- row <-> app object mappers ---------- */
 function contactFromRow(r){
   return { id:r.id, name:r.name, company:r.company||'', phone:r.phone||'', email:r.email||'',
     propertyType:r.property_type||'', status:r.status||'Cold', source:r.source||'', address:r.address||'',
     notes:r.notes||'', nextFollowUp:r.next_follow_up||'', lastContactedAt:r.last_contacted_at||null,
-    ownerEmail:r.owner_email||'', createdAt:r.created_at };
+    transactionType:r.transaction_type||'', ownerEmail:r.owner_email||'', createdAt:r.created_at };
 }
 function contactToRow(c){
   return { name:c.name, company:c.company||null, phone:c.phone||null, email:c.email||null,
     property_type:c.propertyType||null, status:c.status||'Cold', source:c.source||null, address:c.address||null,
     notes:c.notes||null, next_follow_up:c.nextFollowUp||null, last_contacted_at:c.lastContactedAt||null,
-    owner_email:c.ownerEmail||null };
+    transaction_type:c.transactionType||null, owner_email:c.ownerEmail||null };
+}
+function listingFromRow(r){
+  return { id:r.id, address:r.address, listingType:r.listing_type||'Lease', propertyType:r.property_type||'',
+    status:r.status||'Active', price:r.price||0, squareFeet:r.square_feet||0, pricePerSf:r.price_per_sf||0,
+    commissionPct:r.commission_pct||0, expirationDate:r.expiration_date||'', ownerContactId:r.owner_contact_id||null,
+    notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at, updatedAt:r.updated_at };
+}
+function listingToRow(l){
+  return { address:l.address, listing_type:l.listingType||'Lease', property_type:l.propertyType||null,
+    status:l.status||'Active', price:l.price||0, square_feet:l.squareFeet||0, price_per_sf:l.pricePerSf||0,
+    commission_pct:l.commissionPct||0, expiration_date:l.expirationDate||null, owner_contact_id:l.ownerContactId||null,
+    notes:l.notes||null, owner_email:l.ownerEmail||null };
+}
+function listingInterestFromRow(r){
+  return { id:r.id, listingId:r.listing_id, contactId:r.contact_id, notes:r.notes||'', createdAt:r.created_at };
 }
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
@@ -42,6 +57,9 @@ const STATUSES = ['Cold','Warm','Hot','Client','Dead'];
 const STAGES = ['New Lead','Contacted','Qualified','LOI / Proposal','Negotiation','Under Contract','Closed Won','Closed Lost'];
 const OUTCOMES = ['No Answer','Left Voicemail','Gatekeeper','Callback Requested','Not Interested','Interested','Meeting Scheduled','Wrong Number'];
 const PROPERTY_TYPES = ['Office','Industrial','Retail','Multifamily','Land','Mixed-Use','Medical','Hospitality','Other'];
+const TRANSACTION_TYPES = ['Lease','Sale','Both'];
+const LISTING_TYPES = ['Lease','Sale'];
+const LISTING_STATUSES = ['Active','Under Contract','Expired','Withdrawn','Off Market'];
 
 /* ---------- helpers ---------- */
 function money(n){
@@ -77,6 +95,9 @@ function isPastOrToday(d){
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function contactById(id){ return state.contacts.find(c=>c.id===id); }
 function dealById(id){ return state.deals.find(d=>d.id===id); }
+function listingById(id){ return state.listings.find(l=>l.id===id); }
+function fmtSf(n){ n=Number(n)||0; return n? n.toLocaleString('en-US',{maximumFractionDigits:0})+' SF' : '—'; }
+function fmtPerSf(n){ n=Number(n)||0; return n? '$'+n.toFixed(2)+'/SF' : '—'; }
 
 function toast(msg){
   let t = document.querySelector('.toast');
@@ -108,8 +129,17 @@ async function loadAllData(){
   state.deals = (dealsRes.data||[]).map(dealFromRow);
   state.calls = (callsRes.data||[]).map(callFromRow);
   state.activities = (activitiesRes.data||[]).map(activityFromRow);
+
+  const [listingsRes, interestsRes] = await Promise.all([
+    supabaseClient.from('listings').select('*').order('created_at',{ascending:false}),
+    supabaseClient.from('listing_interests').select('*'),
+  ]);
+  listingsSchemaReady = !listingsRes.error && !interestsRes.error;
+  state.listings = listingsSchemaReady ? (listingsRes.data||[]).map(listingFromRow) : [];
+  state.listingInterests = listingsSchemaReady ? (interestsRes.data||[]).map(listingInterestFromRow) : [];
   return true;
 }
+let listingsSchemaReady = true;
 
 async function logActivity(type, description, contactId, dealId){
   const { error } = await supabaseClient.from('activities').insert({
@@ -128,6 +158,8 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'deals' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'calls' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'activities' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'listings' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'listing_interests' }, onRemoteChange)
     .subscribe();
 }
 function onRemoteChange(){
@@ -249,7 +281,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, activity: renderActivity };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, activity: renderActivity };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -266,6 +298,7 @@ document.getElementById('todayLabel').textContent = new Date().toLocaleDateStrin
 /* ---------- Dashboard ---------- */
 function renderDashboard(){
   const view = document.getElementById('view');
+  view.className = 'view';
   const openDeals = state.deals.filter(d=>!['Closed Won','Closed Lost'].includes(d.stage));
   const pipelineValue = openDeals.reduce((s,d)=>s+(Number(d.value)||0)*((Number(d.commissionPct)||0)/100),0);
   const callsToday = state.calls.filter(c=>isToday(c.timestamp)).length;
@@ -328,6 +361,7 @@ function renderDashboard(){
 /* ---------- Prospects ---------- */
 function renderProspects(){
   const view = document.getElementById('view');
+  view.className = 'view';
   view.innerHTML = `
     <div class="page-head">
       <div><h1>Prospects</h1><p>${state.contacts.length} contacts tracked</p></div>
@@ -340,10 +374,11 @@ function renderProspects(){
     <div class="filters-row">
       <select id="filterStatus"><option value="">All statuses</option>${STATUSES.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>
       <select id="filterType"><option value="">All property types</option>${PROPERTY_TYPES.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>
+      <select id="filterTxn"><option value="">Leases &amp; Sales</option>${TRANSACTION_TYPES.map(s=>`<option value="${s}">${s} only</option>`).join('')}<option value="Unspecified">Unspecified</option></select>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Company</th><th>Phone</th><th>Type</th><th>Status</th><th>Owner</th><th>Next Follow-up</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Company</th><th>Phone</th><th>Property Type</th><th>Deal Type</th><th>Status</th><th>Owner</th><th>Next Follow-up</th><th></th></tr></thead>
         <tbody id="prospectsBody"></tbody>
       </table>
     </div>
@@ -359,7 +394,53 @@ function renderProspects(){
   });
   document.getElementById('filterStatus').onchange = renderProspectsTable;
   document.getElementById('filterType').onchange = renderProspectsTable;
+  document.getElementById('filterTxn').onchange = renderProspectsTable;
   renderProspectsTable();
+}
+
+function txnBadge(t){
+  if(!t) return '<span class="badge dead">Unspecified</span>';
+  const cls = t==='Lease' ? 'client' : t==='Sale' ? 'cold' : 'hot';
+  return `<span class="badge ${cls}">${esc(t)}</span>`;
+}
+
+function contactRowHtml(c){
+  return `
+    <tr data-id="${c.id}">
+      <td class="cell-name">${esc(c.name)}</td>
+      <td>${esc(c.company||'—')}<div class="cell-sub">${esc(c.email||'')}</div></td>
+      <td>${esc(c.phone||'—')}</td>
+      <td>${esc(c.propertyType||'—')}</td>
+      <td>${txnBadge(c.transactionType)}</td>
+      <td><span class="badge ${c.status.toLowerCase()}">${c.status}</span></td>
+      <td><span class="owner-tag" title="${esc(c.ownerEmail||'Unassigned')}"><span class="owner-dot">${esc(initials(ownerLabel(c.ownerEmail)))}</span>${esc(ownerLabel(c.ownerEmail))}</span></td>
+      <td>${c.nextFollowUp? fmtDate(c.nextFollowUp) : '—'}</td>
+      <td>
+        <div class="actions-cell">
+          <button class="icon-btn callBtn" title="Call"><svg viewBox="0 0 24 24"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.2.2 2.4.6 3.6.1.4 0 .8-.3 1.1L6.6 10.8z"/></svg></button>
+          <button class="icon-btn emailBtn" title="Draft Email"><svg viewBox="0 0 24 24"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2.7V17h14V6.7l-7 5.3-7-5.3zm.8-.7L12 10.5 17.2 6H5.8z"/></svg></button>
+          <button class="icon-btn editBtn" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+          <button class="icon-btn delBtn" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function wireContactRow(tr){
+  const id = tr.dataset.id;
+  tr.querySelector('.editBtn').onclick = ()=>openContactModal(contactById(id));
+  tr.querySelector('.emailBtn').onclick = ()=>openEmailComposer(contactById(id));
+  tr.querySelector('.delBtn').onclick = async ()=>{
+    if(confirm('Delete this contact? This cannot be undone.')){
+      const { error } = await supabaseClient.from('contacts').delete().eq('id', id);
+      if(error){ toast('Delete failed: '+error.message); return; }
+      await loadAllData();
+      toast('Contact deleted');
+      renderProspectsTable();
+    }
+  };
+  tr.querySelector('.callBtn').onclick = ()=>{ coldCallActiveId = id; location.hash = '#coldcall'; };
 }
 
 function renderProspectsTable(){
@@ -367,49 +448,30 @@ function renderProspectsTable(){
   if(!body) return;
   const statusF = document.getElementById('filterStatus').value;
   const typeF = document.getElementById('filterType').value;
+  const txnF = document.getElementById('filterTxn').value;
   const q = currentSearch.toLowerCase();
   let list = state.contacts.filter(c=>{
     if(statusF && c.status!==statusF) return false;
     if(typeF && c.propertyType!==typeF) return false;
+    if(txnF==='Unspecified' && c.transactionType) return false;
+    if(txnF && txnF!=='Unspecified' && c.transactionType!==txnF) return false;
     if(q && !(`${c.name} ${c.company} ${c.email}`.toLowerCase().includes(q))) return false;
     return true;
   }).sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
 
-  if(!list.length){ body.innerHTML = `<tr><td colspan="8"><div class="empty">No contacts found.</div></td></tr>`; return; }
+  if(!list.length){ body.innerHTML = `<tr><td colspan="9"><div class="empty">No contacts found.</div></td></tr>`; return; }
 
-  body.innerHTML = list.map(c=>`
-    <tr data-id="${c.id}">
-      <td class="cell-name">${esc(c.name)}</td>
-      <td>${esc(c.company||'—')}<div class="cell-sub">${esc(c.email||'')}</div></td>
-      <td>${esc(c.phone||'—')}</td>
-      <td>${esc(c.propertyType||'—')}</td>
-      <td><span class="badge ${c.status.toLowerCase()}">${c.status}</span></td>
-      <td><span class="owner-tag" title="${esc(c.ownerEmail||'Unassigned')}"><span class="owner-dot">${esc(initials(ownerLabel(c.ownerEmail)))}</span>${esc(ownerLabel(c.ownerEmail))}</span></td>
-      <td>${c.nextFollowUp? fmtDate(c.nextFollowUp) : '—'}</td>
-      <td>
-        <div class="actions-cell">
-          <button class="icon-btn callBtn" title="Call"><svg viewBox="0 0 24 24"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.2.2 2.4.6 3.6.1.4 0 .8-.3 1.1L6.6 10.8z"/></svg></button>
-          <button class="icon-btn editBtn" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
-          <button class="icon-btn delBtn" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
+  if(txnF){
+    body.innerHTML = list.map(contactRowHtml).join('');
+  } else {
+    const leases = list.filter(c=>c.transactionType==='Lease'||c.transactionType==='Both');
+    const sales = list.filter(c=>c.transactionType==='Sale'||c.transactionType==='Both');
+    const unspecified = list.filter(c=>!c.transactionType);
+    const section = (label, items) => items.length ? `<tr class="table-group-row"><td colspan="9">${label} <span class="cell-sub">(${items.length})</span></td></tr>${items.map(contactRowHtml).join('')}` : '';
+    body.innerHTML = section('Leases', leases) + section('Sales', sales) + section('Unspecified', unspecified);
+  }
 
-  body.querySelectorAll('tr').forEach(tr=>{
-    const id = tr.dataset.id;
-    tr.querySelector('.editBtn').onclick = ()=>openContactModal(contactById(id));
-    tr.querySelector('.delBtn').onclick = async ()=>{
-      if(confirm('Delete this contact? This cannot be undone.')){
-        const { error } = await supabaseClient.from('contacts').delete().eq('id', id);
-        if(error){ toast('Delete failed: '+error.message); return; }
-        await loadAllData();
-        toast('Contact deleted');
-        renderProspectsTable();
-      }
-    };
-    tr.querySelector('.callBtn').onclick = ()=>{ coldCallActiveId = id; location.hash = '#coldcall'; };
-  });
+  body.querySelectorAll('tr[data-id]').forEach(wireContactRow);
 }
 
 function openContactModal(contact){
@@ -429,10 +491,12 @@ function openContactModal(contact){
             <label>Source<input type="text" id="f_source" value="${esc(c.source)}" placeholder="Referral, LoopNet…"></label>
             <label>Property Type<select id="f_type">${PROPERTY_TYPES.map(t=>`<option ${t===c.propertyType?'selected':''}>${t}</option>`).join('')}</select></label>
             <label>Status<select id="f_status">${STATUSES.map(s=>`<option ${s===c.status?'selected':''}>${s}</option>`).join('')}</select></label>
+            <label>Looking to<select id="f_txn"><option value="" ${!c.transactionType?'selected':''}>— Unspecified —</option>${TRANSACTION_TYPES.map(t=>`<option ${t===c.transactionType?'selected':''}>${t}</option>`).join('')}</select></label>
             <label class="full">Property Address<input type="text" id="f_address" value="${esc(c.address)}" placeholder="123 Main St, City"></label>
             <label>Next Follow-up<input type="date" id="f_followup" value="${c.nextFollowUp||''}"></label>
             <label class="full">Notes<textarea id="f_notes" placeholder="Context, priorities, relationship notes…">${esc(c.notes)}</textarea></label>
           </div>
+          ${isEdit? `<div class="field-label" style="margin-top:18px;">Properties Owned</div><div id="propertiesSection"></div>` : ''}
         </div>
         <div class="modal-foot">
           <button class="btn outline" id="cancelBtn">Cancel</button>
@@ -446,6 +510,52 @@ function openContactModal(contact){
   root.querySelector('.modal-close').onclick = close;
   root.querySelector('#cancelBtn').onclick = close;
   root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+
+  if(isEdit){
+    const ownedListings = state.listings.filter(l=>l.ownerContactId===c.id);
+    let activePropId = ownedListings[0]?.id || null;
+    function renderPropsSection(){
+      const sec = root.querySelector('#propertiesSection');
+      if(!sec) return;
+      if(!listingsSchemaReady){
+        sec.innerHTML = `<div class="empty" style="text-align:left;padding:6px 0;">Run <code>schema_v2.sql</code> to enable property tracking.</div>`;
+        return;
+      }
+      if(!ownedListings.length){
+        sec.innerHTML = `<div class="empty" style="text-align:left;padding:6px 0 12px;">No properties on file for this contact yet.</div><button type="button" class="btn outline sm" id="addPropBtn">+ Add Property</button>`;
+      } else {
+        const active = ownedListings.find(l=>l.id===activePropId) || ownedListings[0];
+        activePropId = active.id;
+        sec.innerHTML = `
+          <div class="property-tabs">
+            ${ownedListings.map(l=>`<button type="button" class="property-tab-btn ${l.id===active.id?'active':''}" data-id="${l.id}">${esc((l.address||'').split(',')[0])}</button>`).join('')}
+          </div>
+          <div class="property-detail-card">
+            <div class="property-detail-grid">
+              <div><div class="ik">Type</div><div class="iv">${esc(active.listingType)}</div></div>
+              <div><div class="ik">Property Type</div><div class="iv">${esc(active.propertyType||'—')}</div></div>
+              <div><div class="ik">Status</div><div class="iv">${esc(active.status)}</div></div>
+              <div><div class="ik">Price</div><div class="iv">${active.price?fullMoney(active.price):'—'}</div></div>
+              <div><div class="ik">SF</div><div class="iv">${fmtSf(active.squareFeet)}</div></div>
+              <div><div class="ik">$/SF</div><div class="iv">${fmtPerSf(active.pricePerSf)}</div></div>
+              <div><div class="ik">Expires</div><div class="iv">${active.expirationDate?fmtDate(active.expirationDate):'—'}</div></div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button type="button" class="btn outline sm" id="editPropBtn">Edit Property</button>
+              <button type="button" class="btn outline sm" id="addPropBtn">+ Add Another</button>
+            </div>
+          </div>
+        `;
+        sec.querySelectorAll('.property-tab-btn').forEach(btn=>{
+          btn.onclick = ()=>{ activePropId = btn.dataset.id; renderPropsSection(); };
+        });
+        sec.querySelector('#editPropBtn').onclick = ()=>openListingModal(active);
+      }
+      const addBtn = sec.querySelector('#addPropBtn');
+      if(addBtn) addBtn.onclick = ()=>openListingModal(null, c.id);
+    }
+    renderPropsSection();
+  }
   root.querySelector('#saveBtn').onclick = async ()=>{
     const name = document.getElementById('f_name').value.trim();
     if(!name){ toast('Name is required'); return; }
@@ -457,6 +567,7 @@ function openContactModal(contact){
       source: document.getElementById('f_source').value.trim(),
       propertyType: document.getElementById('f_type').value,
       status: document.getElementById('f_status').value,
+      transactionType: document.getElementById('f_txn').value,
       address: document.getElementById('f_address').value.trim(),
       nextFollowUp: document.getElementById('f_followup').value,
       notes: document.getElementById('f_notes').value.trim(),
@@ -486,6 +597,7 @@ function openContactModal(contact){
 /* ---------- Cold Call ---------- */
 function renderColdCall(){
   const view = document.getElementById('view');
+  view.className = 'view';
   const q = currentSearch.toLowerCase();
   let queue = state.contacts.filter(c=>c.status!=='Client' && c.status!=='Dead');
   if(q) queue = queue.filter(c=>`${c.name} ${c.company}`.toLowerCase().includes(q));
@@ -577,6 +689,7 @@ function renderCallPanel(queue){
     <div class="call-actions">
       <div style="display:flex;gap:8px;">
         <button class="btn outline sm" id="editContactBtn">Edit Contact</button>
+        <button class="btn outline sm" id="emailContactBtn">Draft Email</button>
         <button class="btn outline sm" id="skipBtn">Skip &rarr;</button>
       </div>
       <button class="btn gold" id="logCallBtn">Log Call &amp; Next</button>
@@ -598,6 +711,7 @@ function renderCallPanel(queue){
   });
 
   document.getElementById('editContactBtn').onclick = ()=>openContactModal(c);
+  document.getElementById('emailContactBtn').onclick = ()=>openEmailComposer(c);
   document.getElementById('skipBtn').onclick = ()=>{
     const idx = queue.findIndex(x=>x.id===c.id);
     coldCallActiveId = queue[(idx+1)%queue.length]?.id || null;
@@ -638,6 +752,7 @@ let draggedDealId = null;
 
 function renderDeals(){
   const view = document.getElementById('view');
+  view.className = 'view view-deals';
   const q = currentSearch.toLowerCase();
   let deals = state.deals;
   if(q) deals = deals.filter(d=>`${d.title} ${d.propertyAddress}`.toLowerCase().includes(q));
@@ -785,9 +900,399 @@ function openDealModal(deal, defaultStage){
   };
 }
 
+/* ---------- Listings ---------- */
+function renderListings(){
+  const view = document.getElementById('view');
+  view.className = 'view';
+  if(!listingsSchemaReady){
+    view.innerHTML = `<div class="panel"><div class="panel-body">
+      <h3 style="margin-top:0;">Setup needed</h3>
+      <p style="color:var(--text-dim);font-size:13.5px;">The Listings feature needs one more database update. Run <code>schema_v2.sql</code> in your Supabase project's SQL editor, then reload this page.</p>
+    </div></div>`;
+    return;
+  }
+  const q = currentSearch.toLowerCase();
+  let listings = state.listings;
+  if(q) listings = listings.filter(l=>`${l.address}`.toLowerCase().includes(q));
+  const activeCount = listings.filter(l=>l.status==='Active').length;
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Active Listings</h1><p>${listings.length} properties tracked · ${activeCount} active</p></div>
+      <button class="btn gold" id="addListingBtn">+ Add Listing</button>
+    </div>
+    <div class="filters-row">
+      <select id="filterListingStatus"><option value="">All statuses</option>${LISTING_STATUSES.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>
+      <select id="filterListingType"><option value="">Lease &amp; Sale</option>${LISTING_TYPES.map(s=>`<option value="${s}">${s} only</option>`).join('')}</select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Address</th><th>Type</th><th>Property Type</th><th>Price</th><th>SF</th><th>$/SF</th><th>Expires</th><th>Status</th><th>Owner</th><th></th></tr></thead>
+        <tbody id="listingsBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('addListingBtn').onclick = ()=>openListingModal();
+  document.getElementById('filterListingStatus').onchange = renderListingsTable;
+  document.getElementById('filterListingType').onchange = renderListingsTable;
+  renderListingsTable();
+}
+
+function renderListingsTable(){
+  const body = document.getElementById('listingsBody');
+  if(!body) return;
+  const statusF = document.getElementById('filterListingStatus').value;
+  const typeF = document.getElementById('filterListingType').value;
+  const q = currentSearch.toLowerCase();
+  const list = state.listings.filter(l=>{
+    if(statusF && l.status!==statusF) return false;
+    if(typeF && l.listingType!==typeF) return false;
+    if(q && !l.address.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+
+  if(!list.length){ body.innerHTML = `<tr><td colspan="10"><div class="empty">No listings yet. Add your first active listing.</div></td></tr>`; return; }
+
+  const statusCls = { 'Active':'client', 'Under Contract':'warm', 'Expired':'dead', 'Withdrawn':'dead', 'Off Market':'cold' };
+  body.innerHTML = list.map(l=>`
+    <tr data-id="${l.id}">
+      <td class="cell-name">${esc(l.address)}</td>
+      <td><span class="badge ${l.listingType==='Lease'?'client':'cold'}">${esc(l.listingType)}</span></td>
+      <td>${esc(l.propertyType||'—')}</td>
+      <td>${l.price? fullMoney(l.price):'—'}</td>
+      <td>${fmtSf(l.squareFeet)}</td>
+      <td>${fmtPerSf(l.pricePerSf)}</td>
+      <td>${l.expirationDate? fmtDate(l.expirationDate):'—'}</td>
+      <td><span class="badge ${statusCls[l.status]||'dead'}">${esc(l.status)}</span></td>
+      <td><span class="owner-tag" title="${esc(l.ownerEmail||'Unassigned')}"><span class="owner-dot">${esc(initials(ownerLabel(l.ownerEmail)))}</span>${esc(ownerLabel(l.ownerEmail))}</span></td>
+      <td>
+        <div class="actions-cell">
+          <button class="icon-btn editBtn" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+          <button class="icon-btn delBtn" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+
+  body.querySelectorAll('tr').forEach(tr=>{
+    const id = tr.dataset.id;
+    tr.querySelector('.editBtn').onclick = ()=>openListingModal(listingById(id));
+    tr.querySelector('.delBtn').onclick = async ()=>{
+      if(confirm('Delete this listing? Linked potential-client records will also be removed.')){
+        const { error } = await supabaseClient.from('listings').delete().eq('id', id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData();
+        toast('Listing deleted');
+        renderListingsTable();
+      }
+    };
+  });
+}
+
+function parseListingText(text){
+  const out = {};
+  const addrMatch = text.match(/\d{1,6}\s+[A-Za-z0-9.'#-]+(?:\s+[A-Za-z0-9.'#-]+){0,5}(?:,\s*[A-Za-z .]+)?(?:,\s*[A-Z]{2}\s*\d{5})?/);
+  if(addrMatch) out.address = addrMatch[0].trim();
+
+  const perSfMatch = text.match(/\$\s*([\d,]+\.?\d*)\s*\/?\s*(?:SF|sq\.?\s*ft)/i);
+  if(perSfMatch) out.pricePerSf = parseFloat(perSfMatch[1].replace(/,/g,''));
+
+  const allDollar = [...text.matchAll(/\$\s*([\d,]+(?:\.\d+)?)/g)].map(m=>parseFloat(m[1].replace(/,/g,'')));
+  if(allDollar.length){
+    const totalCandidate = allDollar.find(v => v !== out.pricePerSf && v > 1000) || allDollar[0];
+    out.price = totalCandidate;
+  }
+
+  const sfMatch = text.match(/([\d,]{3,})\s*(?:SF|sq\.?\s*ft|square feet)/i);
+  if(sfMatch) out.squareFeet = parseFloat(sfMatch[1].replace(/,/g,''));
+
+  const expMatch = text.match(/expir\w*[^\n\d]{0,15}(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\w+ \d{1,2},? \d{4})/i);
+  if(expMatch){
+    const d = new Date(expMatch[1]);
+    if(!isNaN(d)) out.expirationDate = d.toISOString().slice(0,10);
+  }
+
+  if(/for lease|lease rate|\/sf\/yr|\/sf\/mo/i.test(text)) out.listingType = 'Lease';
+  else if(/for sale|asking price|purchase price/i.test(text)) out.listingType = 'Sale';
+
+  return out;
+}
+
+let listingModalTab = 'details';
+function openListingModal(listing, prefillOwnerContactId){
+  const isEdit = !!listing;
+  const l = listing || { address:'', listingType:'Lease', propertyType:PROPERTY_TYPES[0], status:'Active', price:'', squareFeet:'', pricePerSf:'', commissionPct:'', expirationDate:'', ownerContactId:prefillOwnerContactId||'', notes:'' };
+  listingModalTab = 'details';
+  const contactOptions = state.contacts.map(c=>`<option value="${c.id}" ${c.id===l.ownerContactId?'selected':''}>${esc(c.name)}</option>`).join('');
+
+  function detailsTabHtml(){
+    return `
+      <div class="autofill-box">
+        <p class="hint">Paste text copied from a LoopNet listing, flyer, or offering memorandum — I'll try to pull out the address, price, SF, and expiration date for you to review.</p>
+        <textarea id="autofillText" placeholder="Paste listing text here…"></textarea>
+        <button type="button" class="btn outline sm" id="autofillBtn">Autofill from pasted text</button>
+      </div>
+      <div class="form-grid">
+        <label class="full">Address<input type="text" id="l_address" value="${esc(l.address)}" placeholder="123 Main St, City, ST"></label>
+        <label>Listing Type<select id="l_type">${LISTING_TYPES.map(t=>`<option ${t===l.listingType?'selected':''}>${t}</option>`).join('')}</select></label>
+        <label>Property Type<select id="l_ptype">${PROPERTY_TYPES.map(t=>`<option ${t===l.propertyType?'selected':''}>${t}</option>`).join('')}</select></label>
+        <label>Status<select id="l_status">${LISTING_STATUSES.map(s=>`<option ${s===l.status?'selected':''}>${s}</option>`).join('')}</select></label>
+        <label>Expiration Date<input type="date" id="l_exp" value="${l.expirationDate||''}"></label>
+        <label>Price<input type="number" id="l_price" value="${l.price}" placeholder="1500000"></label>
+        <label>Square Feet<input type="number" id="l_sf" value="${l.squareFeet}" placeholder="12000"></label>
+        <label>Price / SF<input type="number" step="0.01" id="l_persf" value="${l.pricePerSf}" placeholder="18.50"></label>
+        <label>Commission %<input type="number" step="0.1" id="l_comm" value="${l.commissionPct}" placeholder="6"></label>
+        <label class="full">Property Owner (contact)<select id="l_owner"><option value="">— None —</option>${contactOptions}</select></label>
+        <label class="full">Notes<textarea id="l_notes" placeholder="Access instructions, condition, anything worth remembering…">${esc(l.notes)}</textarea></label>
+      </div>
+    `;
+  }
+
+  function clientsTabHtml(){
+    const links = state.listingInterests.filter(li=>li.listingId===l.id);
+    const linkedContacts = links.map(li=>({ link:li, contact: contactById(li.contactId) })).filter(x=>x.contact);
+    const availableContacts = state.contacts.filter(c=>!links.some(li=>li.contactId===c.id));
+    return `
+      <p class="hint" style="color:var(--text-dim);font-size:12.5px;margin-top:0;">Prospects and clients interested in this property.</p>
+      <div id="linkedContactsList">
+        ${linkedContacts.length? linkedContacts.map(({link,contact})=>`
+          <div class="linked-contact-row" data-link-id="${link.id}">
+            <div class="avatar">${initials(contact.name)}</div>
+            <div class="lc-main">
+              <div class="lc-name">${esc(contact.name)}</div>
+              <div class="lc-sub">${esc(contact.company||'')}</div>
+            </div>
+            <button type="button" class="icon-btn lc-email" title="Draft Email"><svg viewBox="0 0 24 24"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2.7V17h14V6.7l-7 5.3-7-5.3zm.8-.7L12 10.5 17.2 6H5.8z"/></svg></button>
+            <button type="button" class="icon-btn lc-remove" title="Remove"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+          </div>`).join('') : '<div class="empty">No potential clients linked yet.</div>'}
+      </div>
+      <div class="add-linked-row">
+        <select id="addLinkContact">${availableContacts.length? availableContacts.map(c=>`<option value="${c.id}">${esc(c.name)}${c.company?' — '+esc(c.company):''}</option>`).join('') : '<option value="">No more contacts to add</option>'}</select>
+        <button type="button" class="btn outline sm" id="addLinkBtn" ${!availableContacts.length?'disabled':''}>+ Add</button>
+      </div>
+    `;
+  }
+
+  function renderModalBody(root){
+    root.querySelector('#listingModalBody').innerHTML = listingModalTab==='details' ? detailsTabHtml() : clientsTabHtml();
+    if(listingModalTab==='details'){
+      root.querySelector('#autofillBtn').onclick = ()=>{
+        const parsed = parseListingText(root.querySelector('#autofillText').value);
+        if(parsed.address) root.querySelector('#l_address').value = parsed.address;
+        if(parsed.listingType) root.querySelector('#l_type').value = parsed.listingType;
+        if(parsed.price) root.querySelector('#l_price').value = parsed.price;
+        if(parsed.squareFeet) root.querySelector('#l_sf').value = parsed.squareFeet;
+        if(parsed.pricePerSf) root.querySelector('#l_persf').value = parsed.pricePerSf;
+        if(parsed.expirationDate) root.querySelector('#l_exp').value = parsed.expirationDate;
+        const found = Object.keys(parsed).length;
+        toast(found ? `Filled in ${found} field${found===1?'':'s'} — please double-check them` : "Couldn't find recognizable fields in that text");
+      };
+    } else {
+      root.querySelectorAll('.lc-remove').forEach(btn=>{
+        btn.onclick = async ()=>{
+          const linkId = btn.closest('.linked-contact-row').dataset.linkId;
+          const { error } = await supabaseClient.from('listing_interests').delete().eq('id', linkId);
+          if(error){ toast('Failed to remove: '+error.message); return; }
+          await loadAllData();
+          toast('Removed');
+          renderModalBody(root);
+        };
+      });
+      root.querySelectorAll('.lc-email').forEach(btn=>{
+        btn.onclick = ()=>{
+          const linkId = btn.closest('.linked-contact-row').dataset.linkId;
+          const link = state.listingInterests.find(x=>x.id===linkId);
+          openEmailComposer(contactById(link.contactId), l);
+        };
+      });
+      const addBtn = root.querySelector('#addLinkBtn');
+      if(addBtn && !addBtn.disabled){
+        addBtn.onclick = async ()=>{
+          const contactId = root.querySelector('#addLinkContact').value;
+          if(!contactId) return;
+          const { error } = await supabaseClient.from('listing_interests').insert({ listing_id:l.id, contact_id:contactId });
+          if(error){ toast('Failed to add: '+error.message); return; }
+          await loadAllData();
+          toast('Added');
+          renderModalBody(root);
+        };
+      }
+    }
+  }
+
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>${isEdit?'Edit Listing':'Add Listing'}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          ${isEdit? `<div class="modal-tabs"><button type="button" class="modal-tab active" data-tab="details">Details</button><button type="button" class="modal-tab" data-tab="clients">Potential Clients</button></div>` : ''}
+          <div id="listingModalBody"></div>
+        </div>
+        <div class="modal-foot">
+          ${isEdit? '<button class="btn danger" id="deleteListingBtn" style="margin-right:auto;">Delete</button>':''}
+          <button class="btn outline" id="cancelBtn">Cancel</button>
+          <button class="btn gold" id="saveListingBtn">${isEdit?'Save Changes':'Add Listing'}</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  if(isEdit){
+    root.querySelectorAll('.modal-tab').forEach(btn=>{
+      btn.onclick = ()=>{
+        listingModalTab = btn.dataset.tab;
+        root.querySelectorAll('.modal-tab').forEach(b=>b.classList.toggle('active', b===btn));
+        renderModalBody(root);
+      };
+    });
+    root.querySelector('#deleteListingBtn').onclick = async ()=>{
+      if(confirm('Delete this listing?')){
+        const { error } = await supabaseClient.from('listings').delete().eq('id', l.id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData();
+        toast('Listing deleted'); close(); navigate();
+      }
+    };
+  }
+  renderModalBody(root);
+
+  root.querySelector('#saveListingBtn').onclick = async ()=>{
+    if(listingModalTab!=='details'){
+      listingModalTab='details';
+      root.querySelectorAll('.modal-tab').forEach(b=>b.classList.toggle('active', b.dataset.tab==='details'));
+      renderModalBody(root);
+    }
+    const address = document.getElementById('l_address').value.trim();
+    if(!address){ toast('Address is required'); return; }
+    const data = {
+      address,
+      listingType: document.getElementById('l_type').value,
+      propertyType: document.getElementById('l_ptype').value,
+      status: document.getElementById('l_status').value,
+      expirationDate: document.getElementById('l_exp').value,
+      price: Number(document.getElementById('l_price').value)||0,
+      squareFeet: Number(document.getElementById('l_sf').value)||0,
+      pricePerSf: Number(document.getElementById('l_persf').value)||0,
+      commissionPct: Number(document.getElementById('l_comm').value)||0,
+      ownerContactId: document.getElementById('l_owner').value || null,
+      notes: document.getElementById('l_notes').value.trim(),
+    };
+    const btn = document.getElementById('saveListingBtn');
+    btn.disabled = true;
+    if(isEdit){
+      const { error } = await supabaseClient.from('listings').update(listingToRow({ ...data, ownerEmail: l.ownerEmail })).eq('id', l.id);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      await logActivity('listing', `Updated listing <b>${esc(address)}</b> <span class="cell-sub">(by ${esc(ownerLabel(currentUserEmail()))})</span>`);
+      toast('Listing updated');
+    } else {
+      const row = listingToRow({ ...data, ownerEmail: currentUserEmail() });
+      const { error } = await supabaseClient.from('listings').insert(row);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      await logActivity('listing', `Added new listing <b>${esc(address)}</b> <span class="cell-sub">(by ${esc(ownerLabel(currentUserEmail()))})</span>`);
+      toast('Listing added');
+    }
+    await loadAllData();
+    close();
+    if(document.getElementById('listingsBody')) renderListingsTable();
+    if(location.hash==='#dashboard') renderDashboard();
+  };
+}
+
+/* ---------- Email Composer ---------- */
+const EMAIL_TEMPLATES = {
+  intro: {
+    label: 'Introduction',
+    subject: (c)=>`Introduction — NAI Pfefferle`,
+    body: (c,l,me)=>`Hi ${c.name.split(' ')[0]||''},\n\nMy name is ${me||'[your name]'} with NAI Pfefferle. I wanted to reach out and introduce myself${c.company? ` — I understand you're with ${c.company}`:''}. I'd love to learn more about your current real estate needs and see how we might be able to help.\n\nDo you have a few minutes for a call this week?\n\nBest,\n${me||'[your name]'}\nNAI Pfefferle`,
+  },
+  followup: {
+    label: 'Follow-up After Call',
+    subject: (c)=>`Great speaking with you`,
+    body: (c,l,me)=>`Hi ${c.name.split(' ')[0]||''},\n\nThanks for taking the time to chat. As discussed, I wanted to follow up and keep the conversation going.\n\nLet me know if any questions come up in the meantime — happy to help.\n\nBest,\n${me||'[your name]'}\nNAI Pfefferle`,
+  },
+  listing: {
+    label: 'Listing Info / Pitch',
+    subject: (c,l)=>l? `Property Opportunity: ${l.address}` : `Property Opportunity`,
+    body: (c,l,me)=>{
+      if(!l) return `Hi ${c.name.split(' ')[0]||''},\n\nI wanted to share a property opportunity I think could be a great fit — let me know if you'd like more details.\n\nBest,\n${me||'[your name]'}\nNAI Pfefferle`;
+      const lines = [`Hi ${c.name.split(' ')[0]||''},`,'', `I wanted to flag a ${l.listingType.toLowerCase()} opportunity that might be a fit:`, '', `Address: ${l.address}`];
+      if(l.propertyType) lines.push(`Property Type: ${l.propertyType}`);
+      if(l.squareFeet) lines.push(`Size: ${fmtSf(l.squareFeet)}`);
+      if(l.price) lines.push(`${l.listingType==='Lease'?'Rate':'Price'}: ${fullMoney(l.price)}`);
+      if(l.pricePerSf) lines.push(`Price/SF: ${fmtPerSf(l.pricePerSf)}`);
+      lines.push('', "Let me know if you'd like to see it or want more details.", '', 'Best,', me||'[your name]', 'NAI Pfefferle');
+      return lines.join('\n');
+    },
+  },
+  checkin: {
+    label: 'Checking In',
+    subject: ()=>`Checking in`,
+    body: (c,l,me)=>`Hi ${c.name.split(' ')[0]||''},\n\nJust wanted to check in and see where things stand on your end. Happy to reconnect whenever is useful for you.\n\nBest,\n${me||'[your name]'}\nNAI Pfefferle`,
+  },
+};
+
+function openEmailComposer(contact, listing){
+  if(!contact){ toast('No contact selected'); return; }
+  const myName = ownerLabel(currentUserEmail());
+  let templateKey = listing ? 'listing' : 'intro';
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>Draft Email — ${esc(contact.name)}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <label class="full">To<input type="text" id="e_to" value="${esc(contact.email||'')}" placeholder="email@company.com"></label>
+            <label class="full">Template<select id="e_template">${Object.entries(EMAIL_TEMPLATES).map(([k,t])=>`<option value="${k}" ${k===templateKey?'selected':''}>${t.label}</option>`).join('')}</select></label>
+            <label class="full">Subject<input type="text" id="e_subject"></label>
+            <label class="full">Body<textarea id="e_body" style="min-height:220px;"></textarea></label>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn outline" id="cancelBtn">Close</button>
+          <button class="btn outline" id="copyBtn">Copy</button>
+          <button class="btn gold" id="mailBtn">Open in Mail App</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+
+  function applyTemplate(){
+    const key = root.querySelector('#e_template').value;
+    const t = EMAIL_TEMPLATES[key];
+    root.querySelector('#e_subject').value = t.subject(contact, listing);
+    root.querySelector('#e_body').value = t.body(contact, listing, myName);
+  }
+  root.querySelector('#e_template').onchange = applyTemplate;
+  applyTemplate();
+
+  root.querySelector('#copyBtn').onclick = async ()=>{
+    const text = `Subject: ${root.querySelector('#e_subject').value}\n\n${root.querySelector('#e_body').value}`;
+    try{
+      await navigator.clipboard.writeText(text);
+      toast('Copied to clipboard');
+    }catch(e){ toast('Could not copy — select and copy manually'); }
+  };
+  root.querySelector('#mailBtn').onclick = ()=>{
+    const to = encodeURIComponent(root.querySelector('#e_to').value.trim());
+    const subject = encodeURIComponent(root.querySelector('#e_subject').value);
+    const body = encodeURIComponent(root.querySelector('#e_body').value);
+    window.location.href = `mailto:${to}?subject=${subject}&body=${body}`;
+  };
+}
+
 /* ---------- Activity Log ---------- */
 function renderActivity(){
   const view = document.getElementById('view');
+  view.className = 'view';
   const q = currentSearch.toLowerCase();
   let items = state.activities;
   if(q) items = items.filter(a=>a.description.toLowerCase().includes(q));
