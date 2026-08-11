@@ -998,10 +998,8 @@ function parseListingText(text){
   if(perSfMatch) out.pricePerSf = parseFloat(perSfMatch[1].replace(/,/g,''));
 
   const allDollar = [...text.matchAll(/\$\s*([\d,]+(?:\.\d+)?)/g)].map(m=>parseFloat(m[1].replace(/,/g,'')));
-  if(allDollar.length){
-    const totalCandidate = allDollar.find(v => v !== out.pricePerSf && v > 1000) || allDollar[0];
-    out.price = totalCandidate;
-  }
+  const totalCandidate = allDollar.find(v => v !== out.pricePerSf && v > 1000);
+  if(totalCandidate) out.price = totalCandidate;
 
   const sfMatch = text.match(/([\d,]{3,})\s*(?:SF|sq\.?\s*ft|square feet)/i);
   if(sfMatch) out.squareFeet = parseFloat(sfMatch[1].replace(/,/g,''));
