@@ -337,17 +337,17 @@ const CSV_HEADER_MAP = {
   notes:'notes', note:'notes', comments:'notes',
   nextfollowup:'nextFollowUp', followupdate:'nextFollowUp', followup:'nextFollowUp',
 };
-function csvToContacts(text){
-  const rows = parseCSV(text);
+function rowsToContacts(rows){
   if(!rows.length) return [];
-  const headers = rows[0].map(normalizeHeader);
+  const headers = rows[0].map(h=>normalizeHeader(String(h==null?'':h)));
   const idx = {};
   headers.forEach((h,i)=>{ if(CSV_HEADER_MAP[h] && !(CSV_HEADER_MAP[h] in idx)) idx[CSV_HEADER_MAP[h]] = i; });
   const out = [];
   for(let r=1;r<rows.length;r++){
     const row = rows[r];
-    const get = key => idx[key]!=null ? (row[idx[key]]||'').trim() : '';
-    const name = get('name') || (row[0]||'').trim();
+    if(!row) continue;
+    const get = key => idx[key]!=null && row[idx[key]]!=null ? String(row[idx[key]]).trim() : '';
+    const name = get('name') || String(row[0]==null?'':row[0]).trim();
     if(!name) continue;
     const statusRaw = get('status');
     const status = STATUSES.find(s=>s.toLowerCase()===statusRaw.toLowerCase()) || 'Cold';
@@ -363,6 +363,15 @@ function csvToContacts(text){
     });
   }
   return out;
+}
+function csvToContacts(text){
+  return rowsToContacts(parseCSV(text));
+}
+function xlsxToContacts(arrayBuffer){
+  const wb = XLSX.read(arrayBuffer, { type:'array' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header:1, raw:false, defval:'' });
+  return rowsToContacts(rows);
 }
 function openCsvImportModal(rows){
   if(!rows.length){ toast('No contact rows found in that file'); return; }
@@ -580,7 +589,7 @@ function renderProspects(){
       <div><h1>Prospects</h1><p>${state.contacts.length} contacts tracked</p></div>
       <div style="display:flex;gap:8px;">
         <label class="btn outline" for="csvImportInput" style="cursor:pointer;">Import from Spreadsheet</label>
-        <input type="file" id="csvImportInput" accept=".csv,text/csv" hidden>
+        <input type="file" id="csvImportInput" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
         <button class="btn gold" id="addContactBtn">+ Add Contact</button>
       </div>
     </div>
@@ -600,9 +609,15 @@ function renderProspects(){
   document.getElementById('csvImportInput').addEventListener('change', e=>{
     const file = e.target.files[0];
     if(!file) return;
+    const isExcel = /\.xlsx?$/i.test(file.name);
     const reader = new FileReader();
-    reader.onload = () => openCsvImportModal(csvToContacts(reader.result));
-    reader.readAsText(file);
+    reader.onload = () => {
+      try{
+        const contacts = isExcel ? xlsxToContacts(reader.result) : csvToContacts(reader.result);
+        openCsvImportModal(contacts);
+      }catch(err){ toast("Couldn't read that file: " + err.message); }
+    };
+    if(isExcel) reader.readAsArrayBuffer(file); else reader.readAsText(file);
     e.target.value = '';
   });
   document.getElementById('filterStatus').onchange = renderProspectsTable;
