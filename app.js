@@ -6,7 +6,7 @@ let currentUser = null;
 function currentUserEmail(){ return (currentUser && currentUser.email) || ''; }
 function currentUserId(){ return currentUser && currentUser.id; }
 
-let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[], meetings:[] };
+let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[], meetings:[], poolGames:[] };
 
 /* ---------- row <-> app object mappers ---------- */
 function contactFromRow(r){
@@ -69,16 +69,21 @@ function meetingToRow(m){
   return { title:m.title, meeting_date:m.meetingDate||null, meeting_time:m.meetingTime||null,
     notes:m.notes||null, owner_email:m.ownerEmail||null };
 }
+function poolGameFromRow(r){
+  return { id:r.id, players:r.players||[], winnerName:r.winner_name||'', playedAt:r.played_at, loggedBy:r.logged_by||'' };
+}
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
     commissionPct:r.commission_pct||0, stage:r.stage, closeDate:r.close_date||'', contactId:r.contact_id||null,
     coBrokePct:r.co_broke_pct||0, coBrokeName:r.co_broke_name||'', agentSplitPct:r.agent_split_pct==null?100:r.agent_split_pct,
+    brokerEmails:r.broker_emails||[],
     notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at, updatedAt:r.updated_at };
 }
 function dealToRow(d){
   return { title:d.title, property_address:d.propertyAddress||null, value:d.value||0, commission_pct:d.commissionPct||0,
     stage:d.stage, close_date:d.closeDate||null, contact_id:d.contactId||null, notes:d.notes||null,
     co_broke_pct:Number(d.coBrokePct)||0, co_broke_name:d.coBrokeName||null, agent_split_pct:d.agentSplitPct==null||d.agentSplitPct===''?100:Number(d.agentSplitPct),
+    broker_emails:d.brokerEmails||[],
     owner_email:d.ownerEmail||null };
 }
 function computeCommissionBreakdown(deal){
@@ -319,12 +324,17 @@ async function loadAllData(){
   const meetingsRes = await supabaseClient.from('meetings').select('*').order('meeting_date',{ascending:true});
   meetingsSchemaReady = !meetingsRes.error;
   state.meetings = meetingsSchemaReady ? (meetingsRes.data||[]).map(meetingFromRow) : [];
+
+  const poolRes = await supabaseClient.from('pool_games').select('*').order('played_at',{ascending:false});
+  poolGamesSchemaReady = !poolRes.error;
+  state.poolGames = poolGamesSchemaReady ? (poolRes.data||[]).map(poolGameFromRow) : [];
   return true;
 }
 let todosGoalsSchemaReady = true;
 let marketCompsSchemaReady = true;
 let listingsSchemaReady = true;
 let meetingsSchemaReady = true;
+let poolGamesSchemaReady = true;
 
 async function logActivity(type, description, contactId, dealId){
   const { error } = await supabaseClient.from('activities').insert({
@@ -349,6 +359,7 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'goals' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'market_comps' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'meetings' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'pool_games' }, onRemoteChange)
     .subscribe();
 }
 function onRemoteChange(){
@@ -479,7 +490,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, commissions: renderCommissions, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, activity: renderActivity };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, commissions: renderCommissions, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, pool: renderPool, activity: renderActivity };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -568,7 +579,10 @@ function renderDashboard(){
   view.innerHTML = `
     <div class="page-head">
       <div><h1>Dashboard</h1><p>Your team's book of business at a glance</p></div>
-      <a href="#coldcall" class="btn gold">Start Cold Calling</a>
+      <div style="display:flex;gap:8px;">
+        <button class="btn outline" id="weeklyReportBtn">📋 Weekly Report</button>
+        <a href="#coldcall" class="btn gold">Start Cold Calling</a>
+      </div>
     </div>
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-head"><h3>My To-Do</h3><span class="cell-sub">${myTodos.length} task${myTodos.length===1?'':'s'} · ${todoItems.length-myTodos.length} reminder${(todoItems.length-myTodos.length)===1?'':'s'}</span></div>
@@ -708,6 +722,8 @@ function renderDashboard(){
       if(e.key==='Enter') document.getElementById('addMeetingBtn').click();
     });
   }
+
+  document.getElementById('weeklyReportBtn').onclick = openWeeklyReportModal;
 }
 
 /* ---------- Prospects ---------- */
@@ -1271,13 +1287,16 @@ function renderDeals(){
 let dealModalTab = 'details';
 function openDealModal(deal, defaultStage){
   const isEdit = !!deal;
-  const d = deal || { title:'', propertyAddress:'', value:'', commissionPct:3, stage: defaultStage||STAGES[0], closeDate:'', contactId:'', notes:'', coBrokePct:0, coBrokeName:'', agentSplitPct:100 };
+  const d = deal || { title:'', propertyAddress:'', value:'', commissionPct:3, stage: defaultStage||STAGES[0], closeDate:'', contactId:'', notes:'', coBrokePct:0, coBrokeName:'', agentSplitPct:100, brokerEmails:[] };
   dealModalTab = 'details';
   const fs = {
     title:d.title||'', propertyAddress:d.propertyAddress||'', value:d.value||'', commissionPct:d.commissionPct||'',
     stage:d.stage||STAGES[0], closeDate:d.closeDate||'', contactId:d.contactId||'', notes:d.notes||'',
     coBrokePct:d.coBrokePct||0, coBrokeName:d.coBrokeName||'', agentSplitPct: d.agentSplitPct==null?100:d.agentSplitPct,
+    brokerEmails:[...(d.brokerEmails||[])],
   };
+  let knownBrokersForDeal = knownStaffEmails();
+  fs.brokerEmails.forEach(e=>{ if(!knownBrokersForDeal.includes(e)) knownBrokersForDeal.push(e); });
   const contactOptions = () => state.contacts.map(c=>`<option value="${c.id}" ${c.id===fs.contactId?'selected':''}>${esc(c.name)}</option>`).join('');
 
   function detailsTabHtml(){
@@ -1339,9 +1358,26 @@ function openDealModal(deal, defaultStage){
     `;
   }
 
+  function brokerTabHtml(){
+    return `
+      <p class="hint" style="color:var(--text-dim);font-size:12.5px;margin-top:0;">Who's the broker (or co-brokers) working this deal?</p>
+      <div id="dealBrokerCheckList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+        ${knownBrokersForDeal.length? knownBrokersForDeal.map(email=>`
+          <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:13.5px;color:var(--text);">
+            <input type="checkbox" class="dealBrokerCheck" value="${esc(email)}" ${fs.brokerEmails.includes(email)?'checked':''}>
+            <span class="owner-tag"><span class="owner-dot">${esc(initials(ownerLabel(email)))}</span>${esc(ownerLabel(email))}</span>
+          </label>`).join('') : '<div class="empty" style="text-align:left;padding:0;">No known team members yet.</div>'}
+      </div>
+      <div class="add-linked-row">
+        <input type="text" id="addDealBrokerEmail" placeholder="another.broker@naipfefferle.com">
+        <button type="button" class="btn outline sm" id="addDealBrokerBtn">+ Add</button>
+      </div>
+    `;
+  }
+
   function renderModalBody(root){
     const body = root.querySelector('#dealModalBody');
-    body.innerHTML = dealModalTab==='details' ? detailsTabHtml() : dealModalTab==='cobroke' ? coBrokeTabHtml() : houseSplitTabHtml();
+    body.innerHTML = dealModalTab==='details' ? detailsTabHtml() : dealModalTab==='cobroke' ? coBrokeTabHtml() : dealModalTab==='housesplit' ? houseSplitTabHtml() : brokerTabHtml();
     if(dealModalTab==='details'){
       const bind = (id, key) => {
         const el = root.querySelector('#'+id);
@@ -1361,7 +1397,7 @@ function openDealModal(deal, defaultStage){
           refreshPreview(root);
         };
       });
-    } else {
+    } else if(dealModalTab==='housesplit'){
       root.querySelector('#d_agent_pct').addEventListener('input', e=>{ fs.agentSplitPct = e.target.value; refreshPreview(root); });
       root.querySelectorAll('[data-agent]').forEach(btn=>{
         btn.onclick = ()=>{
@@ -1370,10 +1406,25 @@ function openDealModal(deal, defaultStage){
           refreshPreview(root);
         };
       });
+    } else {
+      root.querySelectorAll('.dealBrokerCheck').forEach(cb=>{
+        cb.addEventListener('change', ()=>{
+          if(cb.checked){ if(!fs.brokerEmails.includes(cb.value)) fs.brokerEmails.push(cb.value); }
+          else { fs.brokerEmails = fs.brokerEmails.filter(e=>e!==cb.value); }
+        });
+      });
+      root.querySelector('#addDealBrokerBtn').onclick = ()=>{
+        const input = root.querySelector('#addDealBrokerEmail');
+        const email = input.value.trim();
+        if(!email) return;
+        if(!knownBrokersForDeal.includes(email)) knownBrokersForDeal.push(email);
+        if(!fs.brokerEmails.includes(email)) fs.brokerEmails.push(email);
+        renderModalBody(root);
+      };
     }
   }
 
-  const tabs = [['details','Details'],['cobroke','Co-Broke'],['housesplit','House Split']];
+  const tabs = [['details','Details'],['cobroke','Co-Broke'],['housesplit','House Split'],['broker','Broker(s)']];
   const html = `
     <div class="modal-overlay">
       <div class="modal">
@@ -1430,6 +1481,7 @@ function openDealModal(deal, defaultStage){
       coBrokePct: Number(fs.coBrokePct)||0,
       coBrokeName: fs.coBrokeName.trim(),
       agentSplitPct: fs.agentSplitPct==null||fs.agentSplitPct===''? 100 : Number(fs.agentSplitPct),
+      brokerEmails: fs.brokerEmails,
     };
     const btn = document.getElementById('saveDealBtn');
     btn.disabled = true;
@@ -1471,7 +1523,7 @@ function commissionRowHtml(deal){
   const stageCls = deal.stage==='Closed Won' ? 'client' : deal.stage==='Closed Lost' ? 'dead' : 'warm';
   return `
     <tr data-id="${deal.id}">
-      <td class="cell-name">${esc(deal.title)}</td>
+      <td class="cell-name cell-name-link" style="cursor:pointer;">${esc(deal.title)}</td>
       <td><span class="badge ${stageCls}">${esc(deal.stage)}</span></td>
       <td>${fullMoney(b.value)}</td>
       <td>${b.commissionPct}%</td>
@@ -1483,11 +1535,58 @@ function commissionRowHtml(deal){
       <td>
         <div class="actions-cell">
           <button class="icon-btn editSplitsBtn" title="Edit Splits"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
-          <button class="btn outline sm showMathBtn">🧮 Show Math</button>
         </div>
       </td>
     </tr>
   `;
+}
+
+function openCommissionViewModal(deal){
+  const b = computeCommissionBreakdown(deal);
+  const contact = deal.contactId ? contactById(deal.contactId) : null;
+  const stageCls = deal.stage==='Closed Won' ? 'client' : deal.stage==='Closed Lost' ? 'dead' : 'warm';
+  const brokers = deal.brokerEmails||[];
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>${esc(deal.title)}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="owner-tag" style="margin-bottom:16px;"><span class="owner-dot">${esc(initials(ownerLabel(deal.ownerEmail)))}</span>Owned by ${esc(ownerLabel(deal.ownerEmail))} · created ${fmtDate(deal.createdAt)}</div>
+          <div class="view-detail-grid">
+            <div><div class="ik">Stage</div><div class="iv"><span class="badge ${stageCls}">${esc(deal.stage)}</span></div></div>
+            <div><div class="ik">Property Address</div><div class="iv">${esc(deal.propertyAddress||'—')}</div></div>
+            <div><div class="ik">Deal Value</div><div class="iv">${fullMoney(b.value)}</div></div>
+            <div><div class="ik">Commission %</div><div class="iv">${b.commissionPct}%</div></div>
+            <div><div class="ik">Expected Close</div><div class="iv">${deal.closeDate? fmtDate(deal.closeDate):'—'}</div></div>
+            <div><div class="ik">Linked Contact</div><div class="iv">${contact? esc(contact.name):'—'}</div></div>
+          </div>
+          <div class="field-label">Commission Breakdown</div>
+          <div class="commission-summary">
+            <div><div class="ik">Total</div><div class="iv">${fullMoney(b.totalCommission)}</div></div>
+            <div><div class="ik">Co-Broke</div><div class="iv">${fullMoney(b.coBrokeAmount)}</div></div>
+            <div><div class="ik">Our Firm</div><div class="iv">${fullMoney(b.ourFirmAmount)}</div></div>
+            <div><div class="ik">Agent</div><div class="iv">${fullMoney(b.agentAmount)}</div></div>
+            <div><div class="ik">House</div><div class="iv">${fullMoney(b.houseAmount)}</div></div>
+          </div>
+          ${brokers.length? `<div class="field-label">Broker(s)</div><div style="margin-bottom:14px;">${brokers.map(e=>`<span class="owner-tag" style="margin-right:6px;"><span class="owner-dot">${esc(initials(ownerLabel(e)))}</span>${esc(ownerLabel(e))}</span>`).join('')}</div>`:''}
+          <div class="field-label">Notes</div>
+          <div style="background:var(--bg);border-radius:9px;padding:10px 12px;font-size:13px;min-height:20px;">${deal.notes? esc(deal.notes) : '<span class="cell-sub">No notes yet.</span>'}</div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn outline" id="viewMathBtn">🧮 Show Math</button>
+          <button class="btn outline" id="viewEditBtn">Edit Splits</button>
+          <button class="btn gold" id="cancelBtn">Close</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  root.querySelector('#viewMathBtn').onclick = ()=>showCommissionMath(deal);
+  root.querySelector('#viewEditBtn').onclick = ()=>{ close(); openDealModal(deal); };
 }
 
 function renderCommissionsTable(){
@@ -1505,8 +1604,8 @@ function renderCommissionsTable(){
   body.querySelectorAll('tr').forEach(tr=>{
     const id = tr.dataset.id;
     const deal = dealById(id);
+    tr.querySelector('.cell-name-link').onclick = ()=>openCommissionViewModal(deal);
     tr.querySelector('.editSplitsBtn').onclick = ()=>openDealModal(deal);
-    tr.querySelector('.showMathBtn').onclick = ()=>showCommissionMath(deal);
   });
 }
 
@@ -2666,6 +2765,257 @@ function openProfilePopup(email){
   }
 }
 
+/* ---------- Pool Room ---------- */
+let poolGame = { players: [{ name:'Player 1', score:0 }, { name:'Player 2', score:0 }] };
+
+function poolTableSvg(){
+  return `
+  <svg viewBox="0 0 800 460" class="pool-table-svg">
+    <defs>
+      <radialGradient id="poolGlow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#fff6cc" stop-opacity="0.55"/>
+        <stop offset="100%" stop-color="#fff6cc" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="bulbGlow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#fff9dd" stop-opacity="0.95"/>
+        <stop offset="100%" stop-color="#fff9dd" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <rect x="0" y="0" width="800" height="460" fill="#0a0705"/>
+    <polygon points="370,95 430,95 610,275 190,275" fill="#ffdd88" opacity="0.08"/>
+    <rect x="90" y="150" width="620" height="230" rx="28" fill="#4a2c18"/>
+    <rect x="122" y="178" width="556" height="174" rx="14" fill="#1a6b45"/>
+    <ellipse cx="400" cy="265" rx="190" ry="75" fill="url(#poolGlow)"/>
+    <circle cx="150" cy="192" r="15" fill="#0a0a0a"/>
+    <circle cx="650" cy="192" r="15" fill="#0a0a0a"/>
+    <circle cx="150" cy="338" r="15" fill="#0a0a0a"/>
+    <circle cx="650" cy="338" r="15" fill="#0a0a0a"/>
+    <circle cx="400" cy="180" r="13" fill="#0a0a0a"/>
+    <circle cx="400" cy="350" r="13" fill="#0a0a0a"/>
+    <g>
+      <circle cx="330" cy="255" r="12" fill="#f4f1e8"/>
+      <circle cx="326" cy="251" r="4" fill="#fff" opacity="0.7"/>
+      <circle cx="395" cy="248" r="12" fill="#111"/>
+      <circle cx="391" cy="244" r="4" fill="#fff" opacity="0.5"/>
+      <text x="395" y="252" font-size="10" fill="#fff" text-anchor="middle" font-weight="700">8</text>
+      <circle cx="440" cy="270" r="12" fill="#c94b3f"/>
+      <circle cx="436" cy="266" r="4" fill="#fff" opacity="0.5"/>
+      <circle cx="370" cy="290" r="12" fill="#2f6fed"/>
+      <circle cx="366" cy="286" r="4" fill="#fff" opacity="0.5"/>
+      <circle cx="460" cy="230" r="12" fill="#e0b23a"/>
+      <circle cx="456" cy="226" r="4" fill="#fff" opacity="0.5"/>
+      <circle cx="320" cy="300" r="12" fill="#3aa655"/>
+      <circle cx="316" cy="296" r="4" fill="#fff" opacity="0.5"/>
+      <circle cx="480" cy="290" r="12" fill="#8a4fd6"/>
+      <circle cx="476" cy="286" r="4" fill="#fff" opacity="0.5"/>
+    </g>
+    <line x1="400" y1="0" x2="400" y2="55" stroke="#222" stroke-width="3"/>
+    <polygon points="365,55 435,55 465,95 335,95" fill="#1f1f1f" stroke="#000" stroke-width="1"/>
+    <ellipse cx="400" cy="95" rx="45" ry="10" fill="url(#bulbGlow)"/>
+  </svg>`;
+}
+
+function renderPoolLeaderboard(){
+  const el = document.getElementById('poolLeaderboard');
+  if(!el) return;
+  if(!poolGamesSchemaReady){
+    el.innerHTML = `<div class="empty">Run <code>schema_v10.sql</code> to enable the leaderboard.</div>`;
+    return;
+  }
+  const wins = {};
+  state.poolGames.forEach(g=>{ if(g.winnerName) wins[g.winnerName] = (wins[g.winnerName]||0)+1; });
+  const sorted = Object.entries(wins).sort((a,b)=>b[1]-a[1]);
+  el.innerHTML = sorted.length ? `<div class="row-list">${sorted.map(([name,n],i)=>`
+    <div class="row-item">
+      <div class="avatar">${i===0?'🏆':esc(initials(name))}</div>
+      <div class="row-main"><div class="row-title">${esc(name)}</div><div class="row-sub">${n} win${n===1?'':'s'}</div></div>
+    </div>`).join('')}</div>` : '<div class="empty">No games recorded yet — go play!</div>';
+}
+
+function poolScoreboardHtml(){
+  return poolGame.players.map((p,i)=>`
+    <div class="score-panel">
+      <input type="text" class="score-name" data-idx="${i}" value="${esc(p.name)}">
+      <div class="flip-digit" data-idx="${i}">${p.score}</div>
+      <div class="score-btns">
+        <button class="btn outline sm poolMinusBtn" data-idx="${i}">−1</button>
+        <button class="btn gold sm poolPlusBtn" data-idx="${i}">+1</button>
+      </div>
+      <div style="display:flex;gap:6px;justify-content:center;margin-top:10px;">
+        <button class="btn outline sm poolWinnerBtn" data-idx="${i}">🏆 Winner</button>
+        ${poolGame.players.length>2? `<button class="icon-btn poolRemoveBtn" data-idx="${i}" title="Remove player"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>`:''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function refreshPoolScoreboard(){
+  const el = document.getElementById('poolScoreboard');
+  if(!el) return;
+  el.innerHTML = poolScoreboardHtml();
+  wirePoolScoreboard();
+}
+
+function wirePoolScoreboard(){
+  const bumpScore = (idx, delta) => {
+    poolGame.players[idx].score = Math.max(0, poolGame.players[idx].score + delta);
+    const el = document.querySelector(`.flip-digit[data-idx="${idx}"]`);
+    el.style.transition = 'transform .15s ease';
+    el.style.transform = 'rotateX(90deg)';
+    setTimeout(()=>{
+      el.textContent = poolGame.players[idx].score;
+      el.style.transform = 'rotateX(0deg)';
+    }, 150);
+  };
+  document.querySelectorAll('.poolPlusBtn').forEach(btn=>{ btn.onclick = ()=>bumpScore(Number(btn.dataset.idx), 1); });
+  document.querySelectorAll('.poolMinusBtn').forEach(btn=>{ btn.onclick = ()=>bumpScore(Number(btn.dataset.idx), -1); });
+  document.querySelectorAll('.score-name').forEach(input=>{
+    input.addEventListener('input', e=>{ poolGame.players[Number(input.dataset.idx)].name = e.target.value; });
+  });
+  document.querySelectorAll('.poolRemoveBtn').forEach(btn=>{
+    btn.onclick = ()=>{
+      if(poolGame.players.length<=2) return;
+      poolGame.players.splice(Number(btn.dataset.idx),1);
+      refreshPoolScoreboard();
+    };
+  });
+  document.querySelectorAll('.poolWinnerBtn').forEach(btn=>{
+    btn.onclick = ()=>declarePoolWinner(Number(btn.dataset.idx));
+  });
+}
+
+async function declarePoolWinner(idx){
+  if(!poolGamesSchemaReady){ toast('Run schema_v10.sql to enable the leaderboard'); return; }
+  const winner = poolGame.players[idx].name.trim() || `Player ${idx+1}`;
+  const { error } = await supabaseClient.from('pool_games').insert({
+    players: poolGame.players.map(p=>({ name: p.name.trim()||'Player', score: p.score })),
+    winner_name: winner, logged_by: currentUserEmail(),
+  });
+  if(error){ toast('Failed to save: '+error.message); return; }
+  await loadAllData();
+  showConfetti(`${winner} wins the table!`, '🏆');
+  poolGame.players.forEach(p=>{ p.score = 0; });
+  refreshPoolScoreboard();
+  renderPoolLeaderboard();
+}
+
+function renderPool(){
+  const view = document.getElementById('view');
+  view.className = 'view view-pool';
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Pool Room</h1><p>Rack 'em up — track everyone's score, crown whoever wins.</p></div>
+    </div>
+    <div class="pool-room">${poolTableSvg()}</div>
+    <div class="pool-scoreboard" id="poolScoreboard">${poolScoreboardHtml()}</div>
+    <div style="text-align:center;margin-top:18px;display:flex;gap:10px;justify-content:center;">
+      <button class="btn outline" id="poolAddPlayerBtn">+ Add Player</button>
+      <button class="btn outline" id="poolResetBtn">Reset Scores</button>
+    </div>
+    <div class="panel" style="margin-top:26px;max-width:480px;margin-left:auto;margin-right:auto;">
+      <div class="panel-head"><h3>🏆 Leaderboard</h3></div>
+      <div class="panel-body" id="poolLeaderboard"></div>
+    </div>
+  `;
+  wirePoolScoreboard();
+  document.getElementById('poolAddPlayerBtn').onclick = ()=>{
+    poolGame.players.push({ name:`Player ${poolGame.players.length+1}`, score:0 });
+    refreshPoolScoreboard();
+  };
+  document.getElementById('poolResetBtn').onclick = ()=>{
+    poolGame.players.forEach(p=>{ p.score = 0; });
+    refreshPoolScoreboard();
+  };
+  renderPoolLeaderboard();
+}
+
+/* ---------- Weekly Report ---------- */
+function openWeeklyReportModal(){
+  const { start, end } = periodRange('Weekly');
+  const inWeek = (dateStr) => { if(!dateStr) return false; const t = new Date(dateStr).getTime(); return t>=start.getTime() && t<=end.getTime(); };
+
+  const newDeals = state.deals.filter(d=>inWeek(d.createdAt));
+  const newListings = state.listings.filter(l=>inWeek(l.createdAt));
+  const newProspects = state.contacts.filter(c=>inWeek(c.createdAt));
+  const callsThisWeek = state.calls.filter(c=>inWeek(c.timestamp));
+  const callsByPerson = {};
+  callsThisWeek.forEach(c=>{ const who = ownerLabel(c.loggedBy); callsByPerson[who] = (callsByPerson[who]||0)+1; });
+  const meetingsThisWeek = state.meetings.filter(m=>{
+    if(!m.meetingDate) return false;
+    const t = new Date(m.meetingDate+'T00:00:00').getTime();
+    return t>=start.getTime() && t<=end.getTime();
+  });
+  const openDeals = state.deals.filter(d=>!['Closed Won','Closed Lost'].includes(d.stage));
+  const projectedCommission = openDeals.reduce((s,d)=>s+computeCommissionBreakdown(d).totalCommission,0);
+  const closedWonThisWeek = state.deals.filter(d=>d.stage==='Closed Won' && inWeek(d.updatedAt));
+  const closedCommissionThisWeek = closedWonThisWeek.reduce((s,d)=>s+computeCommissionBreakdown(d).totalCommission,0);
+  const weekLabel = `${fmtDate(start)} – ${fmtDate(end)}`;
+
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal" style="width:720px;">
+        <div class="modal-head"><h3>Weekly Report — ${weekLabel}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body" id="weeklyReportPrintArea">
+          <h2 style="margin:0 0 4px;">NAI Pfefferle — Weekly Report</h2>
+          <p class="cell-sub" style="margin:0 0 18px;">Week of ${weekLabel}</p>
+
+          <div class="stat-grid" style="margin-bottom:20px;">
+            <div class="stat-card"><div class="label">New Deals</div><div class="value">${newDeals.length}</div></div>
+            <div class="stat-card"><div class="label">New Listings</div><div class="value">${newListings.length}</div></div>
+            <div class="stat-card"><div class="label">New Prospects</div><div class="value">${newProspects.length}</div></div>
+            <div class="stat-card"><div class="label">Cold Calls Made</div><div class="value">${callsThisWeek.length}</div></div>
+            <div class="stat-card"><div class="label">Meetings Held</div><div class="value">${meetingsThisWeek.length}</div></div>
+            <div class="stat-card"><div class="label">Projected Commission</div><div class="value">${fullMoney(projectedCommission)}</div></div>
+          </div>
+          ${closedWonThisWeek.length? `<p style="font-size:13px;"><b>${fullMoney(closedCommissionThisWeek)}</b> in commission closed this week (${closedWonThisWeek.length} deal${closedWonThisWeek.length===1?'':'s'}).</p>`:''}
+
+          <h4>New Deals This Week</h4>
+          ${newDeals.length? `<table style="width:100%;font-size:12.5px;"><thead><tr><th style="text-align:left;">Deal</th><th style="text-align:left;">Stage</th><th style="text-align:right;">Value</th></tr></thead>
+          <tbody>${newDeals.map(d=>`<tr><td>${esc(d.title)}</td><td>${esc(d.stage)}</td><td style="text-align:right;">${fullMoney(d.value)}</td></tr>`).join('')}</tbody></table>` : '<p class="cell-sub">None.</p>'}
+
+          <h4>New Listings This Week</h4>
+          ${newListings.length? `<table style="width:100%;font-size:12.5px;"><thead><tr><th style="text-align:left;">Address</th><th style="text-align:left;">Type</th></tr></thead>
+          <tbody>${newListings.map(l=>`<tr><td>${esc(l.address)}</td><td>${esc(l.listingType)}</td></tr>`).join('')}</tbody></table>` : '<p class="cell-sub">None.</p>'}
+
+          <h4>New Prospects This Week</h4>
+          ${newProspects.length? `<table style="width:100%;font-size:12.5px;"><thead><tr><th style="text-align:left;">Name</th><th style="text-align:left;">Company</th><th style="text-align:left;">Added by</th></tr></thead>
+          <tbody>${newProspects.map(c=>`<tr><td>${esc(c.name)}</td><td>${esc(c.company||'—')}</td><td>${esc(ownerLabel(c.ownerEmail))}</td></tr>`).join('')}</tbody></table>` : '<p class="cell-sub">None.</p>'}
+
+          <h4>Cold Calls by Broker</h4>
+          ${Object.keys(callsByPerson).length? `<table style="width:100%;font-size:12.5px;"><thead><tr><th style="text-align:left;">Broker</th><th style="text-align:right;">Calls</th></tr></thead>
+          <tbody>${Object.entries(callsByPerson).map(([who,n])=>`<tr><td>${esc(who)}</td><td style="text-align:right;">${n}</td></tr>`).join('')}</tbody></table>` : '<p class="cell-sub">None logged.</p>'}
+
+          <h4>Meetings This Week</h4>
+          ${meetingsThisWeek.length? `<ul style="font-size:12.5px;margin:0;padding-left:18px;">${meetingsThisWeek.map(m=>`<li>${esc(m.title)} — ${fmtDate(m.meetingDate)}${m.meetingTime?' '+esc(formatTime(m.meetingTime)):''}</li>`).join('')}</ul>` : '<p class="cell-sub">None scheduled.</p>'}
+
+          <h4>Notes</h4>
+          <textarea id="weeklyReportNotes" rows="6" style="width:100%;" placeholder="Type anything else worth bringing up…"></textarea>
+        </div>
+        <div class="modal-foot">
+          <button class="btn outline" id="cancelBtn">Close</button>
+          <button class="btn gold" id="printReportBtn">🖨️ Print Report</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  root.querySelector('#printReportBtn').onclick = ()=>{
+    const ta = root.querySelector('#weeklyReportNotes');
+    const notesDisplay = document.createElement('div');
+    notesDisplay.style.cssText = 'white-space:pre-wrap;font-size:12.5px;border:1px solid #ccc;border-radius:6px;padding:10px;min-height:80px;';
+    notesDisplay.textContent = ta.value || '(none)';
+    ta.style.display = 'none';
+    ta.insertAdjacentElement('afterend', notesDisplay);
+    window.print();
+    notesDisplay.remove();
+    ta.style.display = '';
+  };
+}
+
 /* ---------- Activity Log ---------- */
 function renderActivity(){
   const view = document.getElementById('view');
@@ -2881,7 +3231,7 @@ function showWelcomePopup(){
   }, 3000);
 }
 
-function celebrateDealWon(){
+function showConfetti(message, icon){
   const colors = ['#c94b3f','#e0b23a','#3aa655','#5b8def','#c74fc0','#4fc3c7'];
   const container = document.createElement('div');
   container.className = 'confetti-container';
@@ -2903,7 +3253,7 @@ function celebrateDealWon(){
   const banner = document.createElement('div');
   banner.className = 'welcome-popup';
   banner.style.top = '90px';
-  banner.innerHTML = `<span class="wp-icon">🎉</span><span>Deal closed — nice work!</span>`;
+  banner.innerHTML = `<span class="wp-icon">${icon||'🎉'}</span><span>${esc(message)}</span>`;
   document.body.appendChild(banner);
   requestAnimationFrame(()=>banner.classList.add('show'));
   setTimeout(()=>{
@@ -2911,6 +3261,9 @@ function celebrateDealWon(){
     setTimeout(()=>banner.remove(), 300);
   }, 3200);
   setTimeout(()=>container.remove(), 4000);
+}
+function celebrateDealWon(){
+  showConfetti('Deal closed — nice work!', '🎉');
 }
 
 function maybeShowInactivityNudge(){
