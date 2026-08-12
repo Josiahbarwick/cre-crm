@@ -72,12 +72,26 @@ function meetingToRow(m){
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
     commissionPct:r.commission_pct||0, stage:r.stage, closeDate:r.close_date||'', contactId:r.contact_id||null,
+    coBrokePct:r.co_broke_pct||0, coBrokeName:r.co_broke_name||'', agentSplitPct:r.agent_split_pct==null?100:r.agent_split_pct,
     notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at, updatedAt:r.updated_at };
 }
 function dealToRow(d){
   return { title:d.title, property_address:d.propertyAddress||null, value:d.value||0, commission_pct:d.commissionPct||0,
     stage:d.stage, close_date:d.closeDate||null, contact_id:d.contactId||null, notes:d.notes||null,
+    co_broke_pct:Number(d.coBrokePct)||0, co_broke_name:d.coBrokeName||null, agent_split_pct:d.agentSplitPct==null||d.agentSplitPct===''?100:Number(d.agentSplitPct),
     owner_email:d.ownerEmail||null };
+}
+function computeCommissionBreakdown(deal){
+  const value = Number(deal.value)||0;
+  const commissionPct = Number(deal.commissionPct)||0;
+  const coBrokePct = Number(deal.coBrokePct)||0;
+  const agentSplitPct = deal.agentSplitPct==null||deal.agentSplitPct===''? 100 : Number(deal.agentSplitPct);
+  const totalCommission = value * commissionPct/100;
+  const coBrokeAmount = totalCommission * coBrokePct/100;
+  const ourFirmAmount = totalCommission - coBrokeAmount;
+  const agentAmount = ourFirmAmount * agentSplitPct/100;
+  const houseAmount = ourFirmAmount - agentAmount;
+  return { value, commissionPct, coBrokePct, agentSplitPct, totalCommission, coBrokeAmount, ourFirmAmount, agentAmount, houseAmount };
 }
 function callFromRow(r){
   return { id:r.id, contactId:r.contact_id, timestamp:r.timestamp, outcome:r.outcome, notes:r.notes||'', loggedBy:r.logged_by||'' };
@@ -230,6 +244,34 @@ function toast(msg){
   t.classList.add('show');
   clearTimeout(t._timer);
   t._timer = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+/* ---------- Show Math (transparency) ---------- */
+function showMathModal(title, steps, note){
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>🧮 ${esc(title)}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="math-steps">
+            ${steps.map(s=>`
+              <div class="math-step">
+                <div class="math-label">${esc(s.label)}</div>
+                <div class="math-formula">${esc(s.formula)}</div>
+                ${s.result!=null? `<div class="math-result">${esc(s.result)}</div>`:''}
+              </div>`).join('')}
+          </div>
+          ${note? `<p class="cell-sub" style="margin-top:14px;">${esc(note)}</p>`:''}
+        </div>
+        <div class="modal-foot"><button class="btn outline" id="cancelBtn">Close</button></div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
 }
 
 /* ---------- data loading ---------- */
@@ -437,7 +479,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, activity: renderActivity };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, commissions: renderCommissions, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, activity: renderActivity };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -1226,26 +1268,120 @@ function renderDeals(){
   });
 }
 
+let dealModalTab = 'details';
 function openDealModal(deal, defaultStage){
   const isEdit = !!deal;
-  const d = deal || { title:'', propertyAddress:'', value:'', commissionPct:3, stage: defaultStage||STAGES[0], closeDate:'', contactId:'', notes:'' };
-  const contactOptions = state.contacts.map(c=>`<option value="${c.id}" ${c.id===d.contactId?'selected':''}>${esc(c.name)}</option>`).join('');
+  const d = deal || { title:'', propertyAddress:'', value:'', commissionPct:3, stage: defaultStage||STAGES[0], closeDate:'', contactId:'', notes:'', coBrokePct:0, coBrokeName:'', agentSplitPct:100 };
+  dealModalTab = 'details';
+  const fs = {
+    title:d.title||'', propertyAddress:d.propertyAddress||'', value:d.value||'', commissionPct:d.commissionPct||'',
+    stage:d.stage||STAGES[0], closeDate:d.closeDate||'', contactId:d.contactId||'', notes:d.notes||'',
+    coBrokePct:d.coBrokePct||0, coBrokeName:d.coBrokeName||'', agentSplitPct: d.agentSplitPct==null?100:d.agentSplitPct,
+  };
+  const contactOptions = () => state.contacts.map(c=>`<option value="${c.id}" ${c.id===fs.contactId?'selected':''}>${esc(c.name)}</option>`).join('');
+
+  function detailsTabHtml(){
+    return `
+      <div class="form-grid">
+        <label class="full">Deal title<input type="text" id="d_title" value="${esc(fs.title)}" placeholder="123 Main St — Office Sale"></label>
+        <label class="full">Property address<input type="text" id="d_address" value="${esc(fs.propertyAddress)}" placeholder="123 Main St, City"></label>
+        <label>Deal value<input type="number" id="d_value" value="${fs.value}" placeholder="1500000"></label>
+        <label>Commission %<input type="number" step="0.1" id="d_comm" value="${fs.commissionPct}" placeholder="3"></label>
+        <label>Stage<select id="d_stage">${STAGES.map(s=>`<option ${s===fs.stage?'selected':''}>${s}</option>`).join('')}</select></label>
+        <label>Expected close date<input type="date" id="d_close" value="${fs.closeDate}"></label>
+        <label class="full">Linked contact<select id="d_contact"><option value="">— None —</option>${contactOptions()}</select></label>
+        <label class="full">Notes<textarea id="d_notes" placeholder="Deal terms, contingencies…">${esc(fs.notes)}</textarea></label>
+      </div>
+    `;
+  }
+
+  function previewHtml(){
+    const b = computeCommissionBreakdown(fs);
+    return `
+      <div class="commission-summary" id="splitPreview">
+        <div><div class="ik">Total Commission</div><div class="iv">${fullMoney(b.totalCommission)}</div></div>
+        <div><div class="ik">Co-Broke</div><div class="iv">${fullMoney(b.coBrokeAmount)}</div></div>
+        <div><div class="ik">Our Firm</div><div class="iv">${fullMoney(b.ourFirmAmount)}</div></div>
+        <div><div class="ik">Agent</div><div class="iv">${fullMoney(b.agentAmount)}</div></div>
+        <div><div class="ik">House</div><div class="iv">${fullMoney(b.houseAmount)}</div></div>
+      </div>
+    `;
+  }
+  function refreshPreview(root){
+    const el = root.querySelector('#splitPreview');
+    if(el) el.outerHTML = previewHtml();
+  }
+
+  function coBrokeTabHtml(){
+    return `
+      <p class="hint" style="color:var(--text-dim);font-size:12.5px;margin-top:0;">What share of the total commission goes to an outside co-operating broker/brokerage, if any.</p>
+      <div class="form-grid">
+        <label class="full">Co-Broke firm / agent name<input type="text" id="d_cobroke_name" value="${esc(fs.coBrokeName)}" placeholder="e.g. Cushman &amp; Wakefield / Jane Doe"></label>
+        <label class="full">Co-Broke % of total commission<input type="number" step="1" min="0" max="100" id="d_cobroke_pct" value="${fs.coBrokePct}" placeholder="0"></label>
+      </div>
+      <div class="split-preset-row">
+        ${[0,25,50,100].map(p=>`<button type="button" class="split-preset-btn" data-cobroke="${p}">${p}%</button>`).join('')}
+      </div>
+      ${previewHtml()}
+    `;
+  }
+
+  function houseSplitTabHtml(){
+    return `
+      <p class="hint" style="color:var(--text-dim);font-size:12.5px;margin-top:0;">Of our firm's share (after any co-broke split), what percent does the agent keep vs. the house?</p>
+      <div class="form-grid">
+        <label class="full">Agent % of our firm's share<input type="number" step="1" min="0" max="100" id="d_agent_pct" value="${fs.agentSplitPct}" placeholder="70"></label>
+      </div>
+      <div class="split-preset-row">
+        ${[[100,'100 / 0'],[80,'80 / 20'],[70,'70 / 30'],[60,'60 / 40'],[50,'50 / 50']].map(([p,label])=>`<button type="button" class="split-preset-btn" data-agent="${p}">${label}</button>`).join('')}
+      </div>
+      ${previewHtml()}
+    `;
+  }
+
+  function renderModalBody(root){
+    const body = root.querySelector('#dealModalBody');
+    body.innerHTML = dealModalTab==='details' ? detailsTabHtml() : dealModalTab==='cobroke' ? coBrokeTabHtml() : houseSplitTabHtml();
+    if(dealModalTab==='details'){
+      const bind = (id, key) => {
+        const el = root.querySelector('#'+id);
+        el.addEventListener('input', ()=>{ fs[key] = el.value; });
+        el.addEventListener('change', ()=>{ fs[key] = el.value; });
+      };
+      bind('d_title','title'); bind('d_address','propertyAddress'); bind('d_value','value');
+      bind('d_comm','commissionPct'); bind('d_stage','stage'); bind('d_close','closeDate');
+      bind('d_contact','contactId'); bind('d_notes','notes');
+    } else if(dealModalTab==='cobroke'){
+      root.querySelector('#d_cobroke_name').addEventListener('input', e=>{ fs.coBrokeName = e.target.value; });
+      root.querySelector('#d_cobroke_pct').addEventListener('input', e=>{ fs.coBrokePct = e.target.value; refreshPreview(root); });
+      root.querySelectorAll('[data-cobroke]').forEach(btn=>{
+        btn.onclick = ()=>{
+          fs.coBrokePct = Number(btn.dataset.cobroke);
+          root.querySelector('#d_cobroke_pct').value = fs.coBrokePct;
+          refreshPreview(root);
+        };
+      });
+    } else {
+      root.querySelector('#d_agent_pct').addEventListener('input', e=>{ fs.agentSplitPct = e.target.value; refreshPreview(root); });
+      root.querySelectorAll('[data-agent]').forEach(btn=>{
+        btn.onclick = ()=>{
+          fs.agentSplitPct = Number(btn.dataset.agent);
+          root.querySelector('#d_agent_pct').value = fs.agentSplitPct;
+          refreshPreview(root);
+        };
+      });
+    }
+  }
+
+  const tabs = [['details','Details'],['cobroke','Co-Broke'],['housesplit','House Split']];
   const html = `
     <div class="modal-overlay">
       <div class="modal">
         <div class="modal-head"><h3>${isEdit?'Edit Deal':'Add Deal'}</h3><button class="modal-close">&times;</button></div>
         <div class="modal-body">
           ${isEdit? `<div class="owner-tag" style="margin-bottom:14px;"><span class="owner-dot">${esc(initials(ownerLabel(d.ownerEmail)))}</span>Owned by ${esc(ownerLabel(d.ownerEmail))} · created ${fmtDate(d.createdAt)}</div>`:''}
-          <div class="form-grid">
-            <label class="full">Deal title<input type="text" id="d_title" value="${esc(d.title)}" placeholder="123 Main St — Office Sale"></label>
-            <label class="full">Property address<input type="text" id="d_address" value="${esc(d.propertyAddress)}" placeholder="123 Main St, City"></label>
-            <label>Deal value<input type="number" id="d_value" value="${d.value}" placeholder="1500000"></label>
-            <label>Commission %<input type="number" step="0.1" id="d_comm" value="${d.commissionPct}" placeholder="3"></label>
-            <label>Stage<select id="d_stage">${STAGES.map(s=>`<option ${s===d.stage?'selected':''}>${s}</option>`).join('')}</select></label>
-            <label>Expected close date<input type="date" id="d_close" value="${d.closeDate||''}"></label>
-            <label class="full">Linked contact<select id="d_contact"><option value="">— None —</option>${contactOptions}</select></label>
-            <label class="full">Notes<textarea id="d_notes" placeholder="Deal terms, contingencies…">${esc(d.notes)}</textarea></label>
-          </div>
+          <div class="modal-tabs">${tabs.map(([key,label],i)=>`<button type="button" class="modal-tab ${i===0?'active':''}" data-tab="${key}">${label}</button>`).join('')}</div>
+          <div id="dealModalBody"></div>
         </div>
         <div class="modal-foot">
           ${isEdit? '<button class="btn danger" id="deleteDealBtn" style="margin-right:auto;">Delete</button>':''}
@@ -1260,6 +1396,13 @@ function openDealModal(deal, defaultStage){
   root.querySelector('.modal-close').onclick = close;
   root.querySelector('#cancelBtn').onclick = close;
   root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  root.querySelectorAll('.modal-tab').forEach(btn=>{
+    btn.onclick = ()=>{
+      dealModalTab = btn.dataset.tab;
+      root.querySelectorAll('.modal-tab').forEach(b=>b.classList.toggle('active', b===btn));
+      renderModalBody(root);
+    };
+  });
   if(isEdit){
     root.querySelector('#deleteDealBtn').onclick = async ()=>{
       if(confirm('Delete this deal?')){
@@ -1270,18 +1413,23 @@ function openDealModal(deal, defaultStage){
       }
     };
   }
+  renderModalBody(root);
+
   root.querySelector('#saveDealBtn').onclick = async ()=>{
-    const title = document.getElementById('d_title').value.trim();
+    const title = fs.title.trim();
     if(!title){ toast('Deal title is required'); return; }
     const data = {
       title,
-      propertyAddress: document.getElementById('d_address').value.trim(),
-      value: Number(document.getElementById('d_value').value)||0,
-      commissionPct: Number(document.getElementById('d_comm').value)||0,
-      stage: document.getElementById('d_stage').value,
-      closeDate: document.getElementById('d_close').value,
-      contactId: document.getElementById('d_contact').value || null,
-      notes: document.getElementById('d_notes').value.trim(),
+      propertyAddress: fs.propertyAddress.trim(),
+      value: Number(fs.value)||0,
+      commissionPct: Number(fs.commissionPct)||0,
+      stage: fs.stage,
+      closeDate: fs.closeDate,
+      contactId: fs.contactId || null,
+      notes: fs.notes.trim(),
+      coBrokePct: Number(fs.coBrokePct)||0,
+      coBrokeName: fs.coBrokeName.trim(),
+      agentSplitPct: fs.agentSplitPct==null||fs.agentSplitPct===''? 100 : Number(fs.agentSplitPct),
     };
     const btn = document.getElementById('saveDealBtn');
     btn.disabled = true;
@@ -1302,6 +1450,87 @@ function openDealModal(deal, defaultStage){
     close(); renderDeals();
     if(justWon) celebrateDealWon();
   };
+}
+
+/* ---------- Commissions ---------- */
+function showCommissionMath(deal){
+  const b = computeCommissionBreakdown(deal);
+  const steps = [
+    { label:'Deal Value', formula: fullMoney(b.value) },
+    { label:'Total Commission', formula:`${fullMoney(b.value)} × ${b.commissionPct}%`, result: fullMoney(b.totalCommission) },
+    { label:'Co-Broke'+(deal.coBrokeName?` (${deal.coBrokeName})`:''), formula:`${fullMoney(b.totalCommission)} × ${b.coBrokePct}%`, result: fullMoney(b.coBrokeAmount) },
+    { label:"Our Firm's Share", formula:`${fullMoney(b.totalCommission)} − ${fullMoney(b.coBrokeAmount)}`, result: fullMoney(b.ourFirmAmount) },
+    { label:'Agent Split', formula:`${fullMoney(b.ourFirmAmount)} × ${b.agentSplitPct}%`, result: fullMoney(b.agentAmount) },
+    { label:'House Split', formula:`${fullMoney(b.ourFirmAmount)} − ${fullMoney(b.agentAmount)}`, result: fullMoney(b.houseAmount) },
+  ];
+  showMathModal(`Commission Math — ${deal.title}`, steps, deal.coBrokePct||deal.agentSplitPct!==100 ? 'Edit these splits from the deal\'s Co-Broke / House Split tabs.' : null);
+}
+
+function commissionRowHtml(deal){
+  const b = computeCommissionBreakdown(deal);
+  const stageCls = deal.stage==='Closed Won' ? 'client' : deal.stage==='Closed Lost' ? 'dead' : 'warm';
+  return `
+    <tr data-id="${deal.id}">
+      <td class="cell-name">${esc(deal.title)}</td>
+      <td><span class="badge ${stageCls}">${esc(deal.stage)}</span></td>
+      <td>${fullMoney(b.value)}</td>
+      <td>${b.commissionPct}%</td>
+      <td>${fullMoney(b.totalCommission)}</td>
+      <td>${b.coBrokePct? `${b.coBrokePct}% — ${fullMoney(b.coBrokeAmount)}` : '—'}</td>
+      <td>${fullMoney(b.ourFirmAmount)}</td>
+      <td>${fullMoney(b.agentAmount)}</td>
+      <td>${fullMoney(b.houseAmount)}</td>
+      <td>
+        <div class="actions-cell">
+          <button class="icon-btn editSplitsBtn" title="Edit Splits"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+          <button class="btn outline sm showMathBtn">🧮 Show Math</button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderCommissionsTable(){
+  const body = document.getElementById('commissionsBody');
+  if(!body) return;
+  const stageF = document.getElementById('filterCommStage').value;
+  const q = currentSearch.toLowerCase();
+  let deals = state.deals.filter(d=>{
+    if(stageF && d.stage!==stageF) return false;
+    if(q && !(`${d.title} ${d.propertyAddress}`.toLowerCase().includes(q))) return false;
+    return true;
+  }).sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt));
+  if(!deals.length){ body.innerHTML = `<tr><td colspan="10"><div class="empty">No deals to show.</div></td></tr>`; return; }
+  body.innerHTML = deals.map(commissionRowHtml).join('');
+  body.querySelectorAll('tr').forEach(tr=>{
+    const id = tr.dataset.id;
+    const deal = dealById(id);
+    tr.querySelector('.editSplitsBtn').onclick = ()=>openDealModal(deal);
+    tr.querySelector('.showMathBtn').onclick = ()=>showCommissionMath(deal);
+  });
+}
+
+function renderCommissions(){
+  const view = document.getElementById('view');
+  view.className = 'view';
+  const totalCommissionAll = state.deals.reduce((s,d)=>s+computeCommissionBreakdown(d).totalCommission,0);
+  const agentTotal = state.deals.reduce((s,d)=>s+computeCommissionBreakdown(d).agentAmount,0);
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Commissions</h1><p>${state.deals.length} deals · ${fullMoney(totalCommissionAll)} total commission · ${fullMoney(agentTotal)} to agents</p></div>
+    </div>
+    <div class="filters-row">
+      <select id="filterCommStage"><option value="">All stages</option>${STAGES.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Deal</th><th>Stage</th><th>Value</th><th>Comm %</th><th>Total Commission</th><th>Co-Broke</th><th>Our Firm</th><th>Agent</th><th>House</th><th></th></tr></thead>
+        <tbody id="commissionsBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('filterCommStage').onchange = renderCommissionsTable;
+  renderCommissionsTable();
 }
 
 /* ---------- Listings ---------- */
@@ -2137,13 +2366,31 @@ function renderCompStats(){
   const byType = {};
   state.marketComps.forEach(c=>{
     if(!c.propertyType || !c.pricePerSf) return;
-    (byType[c.propertyType] = byType[c.propertyType]||[]).push(c.pricePerSf);
+    (byType[c.propertyType] = byType[c.propertyType]||[]).push(c);
   });
-  const cards = Object.entries(byType).map(([type, vals])=>{
-    const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
-    return `<div class="stat-card"><div class="label">${esc(type)} Avg $/SF</div><div class="value">${fmtPerSf(avg)}</div><div class="sub">${vals.length} comp${vals.length===1?'':'s'}</div></div>`;
+  const cards = Object.entries(byType).map(([type, comps])=>{
+    const avg = comps.reduce((a,c)=>a+c.pricePerSf,0)/comps.length;
+    return `<div class="stat-card" data-comp-type="${esc(type)}">
+      <div class="label">${esc(type)} Avg $/SF</div><div class="value">${fmtPerSf(avg)}</div>
+      <div class="sub">${comps.length} comp${comps.length===1?'':'s'}</div>
+      <button class="btn outline sm showCompsMathBtn" style="margin-top:8px;">🧮 Show Math</button>
+    </div>`;
   });
   el.innerHTML = cards.length ? cards.join('') : `<div class="panel" style="grid-column:1/-1;"><div class="panel-body"><div class="empty">Log a few comps to see average $/SF by property type.</div></div></div>`;
+  el.querySelectorAll('.showCompsMathBtn').forEach(btn=>{
+    btn.onclick = ()=>{
+      const type = btn.closest('[data-comp-type]').dataset.compType;
+      const comps = byType[type];
+      const sum = comps.reduce((a,c)=>a+c.pricePerSf,0);
+      const avg = sum/comps.length;
+      const steps = [
+        ...comps.map(c=>({ label:c.address, formula: fmtPerSf(c.pricePerSf) })),
+        { label:'Sum', formula: comps.map(c=>c.pricePerSf.toFixed(2)).join(' + '), result: fmtPerSf(sum) },
+        { label:`Average (÷ ${comps.length})`, formula: `${fmtPerSf(sum)} ÷ ${comps.length}`, result: fmtPerSf(avg) },
+      ];
+      showMathModal(`${type} — Avg $/SF Math`, steps, 'Only comps with both a property type and a $/SF value are counted.');
+    };
+  });
 }
 
 function renderCompsTable(){
