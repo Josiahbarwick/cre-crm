@@ -95,6 +95,76 @@ svg{width:18px;height:18px;fill:currentColor;flex-shrink:0;}
 .view.view-deals{padding-bottom:16px;}
 .view-deals .kcol{max-height:calc(100vh - 232px);}
 
+/* Individuals — solar system */
+.view.view-space{
+  background:#04060f;
+  margin:-26px -28px -60px;
+  padding:26px 28px 60px;
+  min-height:calc(100vh - 65px);
+  position:relative;
+  overflow:hidden;
+}
+.view-space::before,.view-space::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background-repeat:repeat;background-size:260px 260px;
+}
+.view-space::before{
+  background-image:
+    radial-gradient(1.6px 1.6px at 20px 30px, #fff, transparent),
+    radial-gradient(1px 1px at 90px 120px, #fff, transparent),
+    radial-gradient(1.8px 1.8px at 150px 60px, rgba(255,255,255,.8), transparent),
+    radial-gradient(1px 1px at 200px 180px, #fff, transparent),
+    radial-gradient(1.4px 1.4px at 60px 210px, rgba(255,255,255,.7), transparent),
+    radial-gradient(1px 1px at 240px 30px, #fff, transparent),
+    radial-gradient(1.6px 1.6px at 110px 240px, rgba(255,255,255,.6), transparent),
+    radial-gradient(1px 1px at 10px 160px, #fff, transparent),
+    radial-gradient(1.3px 1.3px at 180px 100px, rgba(255,255,255,.75), transparent),
+    radial-gradient(1px 1px at 230px 220px, #fff, transparent);
+  opacity:.9;
+}
+.view-space::after{
+  background-image:
+    radial-gradient(1px 1px at 40px 80px, rgba(255,255,255,.5), transparent),
+    radial-gradient(1.2px 1.2px at 130px 20px, rgba(255,255,255,.4), transparent),
+    radial-gradient(1px 1px at 210px 140px, rgba(255,255,255,.5), transparent),
+    radial-gradient(1px 1px at 70px 190px, rgba(255,255,255,.4), transparent);
+  animation:twinkle 4s ease-in-out infinite;
+}
+@keyframes twinkle{0%,100%{opacity:.3;}50%{opacity:.85;}}
+.view-space .page-head h1{color:#fff;}
+.view-space .page-head p{color:rgba(255,255,255,.55);}
+.solar-system{position:relative;width:100%;height:min(640px, 70vh);margin-top:10px;}
+.sun{
+  position:absolute;top:50%;left:50%;width:60px;height:60px;margin:-30px 0 0 -30px;
+  border-radius:50%;z-index:1;
+  background:radial-gradient(circle at 35% 35%, #fff6d0, #ffcf4d 40%, #ff8a00 75%, #b34700);
+  box-shadow:0 0 70px 20px rgba(255,170,40,.5);
+}
+.orbit-ring{
+  position:absolute;top:50%;left:50%;pointer-events:none;
+  width:calc(var(--r) * 2);height:calc(var(--r) * 2);
+  margin-left:calc(var(--r) * -1);margin-top:calc(var(--r) * -1);
+  border:1px dashed rgba(255,255,255,.14);border-radius:50%;
+}
+.orbit-pivot{position:absolute;inset:0;pointer-events:none;animation-name:orbit-spin;animation-timing-function:linear;animation-iteration-count:infinite;}
+@keyframes orbit-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+.planet-anchor{position:absolute;top:0;left:50%;width:36px;height:36px;margin:-18px 0 0 -18px;pointer-events:none;}
+.planet-body[data-tooltip]:hover::after{
+  content:attr(data-tooltip);position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);
+  background:rgba(10,10,20,.94);color:#fff;font-size:11px;font-weight:700;
+  padding:5px 10px;border-radius:6px;white-space:nowrap;z-index:40;pointer-events:none;
+  border:1px solid rgba(255,255,255,.15);
+}
+.planet-body{
+  position:absolute;inset:0;border-radius:50%;cursor:pointer;pointer-events:auto;
+  display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:12px;
+  animation-name:orbit-counter;animation-timing-function:linear;animation-iteration-count:infinite;
+  transition:transform .2s,box-shadow .2s;
+}
+@keyframes orbit-counter{from{transform:rotate(0deg);}to{transform:rotate(-360deg);}}
+.planet-body:hover{animation-play-state:paused;transform:scale(1.85);box-shadow:0 0 22px 6px currentColor;z-index:30;}
+.planet-body.is-me{box-shadow:0 0 0 2px #fff, 0 0 14px currentColor;}
+
 /* Generic layout bits */
 .page-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;}
 .page-head h1{font-size:20px;margin:0;font-weight:700;}

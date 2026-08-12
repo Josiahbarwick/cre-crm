@@ -89,6 +89,7 @@ const LISTING_STATUSES = ['Active','Under Contract','Expired','Withdrawn','Off M
 const GOAL_METRICS = ['Calls Logged','New Listings','Deals Closed','Commission Earned','Custom'];
 const GOAL_PERIODS = ['Daily','Weekly','Monthly'];
 const COMP_TRANSACTION_TYPES = ['Sale','Lease'];
+const PLANET_COLORS = ['#5b8def','#e2703a','#3aa655','#c74fc0','#e0b23a','#4fc3c7','#e05a6e','#8a6fe0'];
 
 /* ---------- helpers ---------- */
 function money(n){
@@ -413,7 +414,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, goals: renderGoals, news: renderNews, activity: renderActivity };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, activity: renderActivity };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -2138,6 +2139,133 @@ function renderNews(){
   renderCompStats();
   renderCompsTable();
   loadNewsIntoView();
+}
+
+/* ---------- Individuals (solar system) ---------- */
+function renderIndividuals(){
+  const view = document.getElementById('view');
+  view.className = 'view view-space';
+  const emails = knownStaffEmails();
+  const baseRadius = 80, radiusStep = 64, baseDuration = 26, durationStep = 12;
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Individuals</h1><p>Hover a planet to see who it is — click to open their goals &amp; to-do list</p></div>
+    </div>
+    <div class="solar-system" id="solarSystem">
+      <div class="sun" title="NAI Pfefferle"></div>
+      ${emails.length? emails.map((email,i)=>{
+        const r = baseRadius + i*radiusStep;
+        const dur = baseDuration + i*durationStep;
+        const color = PLANET_COLORS[i % PLANET_COLORS.length];
+        const isMe = email===currentUserEmail();
+        const label = ownerLabel(email);
+        const nice = label.charAt(0).toUpperCase()+label.slice(1) + (isMe?' (You)':'');
+        return `
+        <div class="orbit-ring" style="--r:${r}px;">
+          <div class="orbit-pivot" style="animation-duration:${dur}s;">
+            <div class="planet-anchor">
+              <div class="planet-body${isMe?' is-me':''}" data-email="${esc(email)}" data-tooltip="${esc(nice)}" style="background:${color};color:#fff;animation-duration:${dur}s;">${esc(initials(label))}</div>
+            </div>
+          </div>
+        </div>`;
+      }).join('') : ''}
+    </div>
+  `;
+  view.querySelectorAll('.planet-body').forEach(p=>{
+    p.onclick = ()=>openProfilePopup(p.dataset.email);
+  });
+}
+
+function renderProfileTodos(root, containerId){
+  const container = root.querySelector('#'+containerId);
+  if(!container) return;
+  const myTodos = state.todos.filter(t=>!t.done);
+  container.innerHTML = myTodos.length
+    ? myTodos.map(t=>todoItemHtml({ kind:'todo', id:t.id, label:t.title, dueDate:t.dueDate, sortDate:t.dueDate||'9999-99-99' })).join('')
+    : '<div class="empty">Nothing on your list — add something below.</div>';
+  container.querySelectorAll('.todo-row').forEach(row=>{
+    const id = row.dataset.id;
+    row.querySelector('.todo-check').onchange = async ()=>{
+      const { error } = await supabaseClient.from('todos').update({ done:true }).eq('id', id);
+      if(error){ toast('Failed: '+error.message); return; }
+      await loadAllData();
+      renderProfileTodos(root, containerId);
+    };
+    row.querySelector('.todo-del').onclick = async ()=>{
+      const { error } = await supabaseClient.from('todos').delete().eq('id', id);
+      if(error){ toast('Failed: '+error.message); return; }
+      await loadAllData();
+      renderProfileTodos(root, containerId);
+    };
+  });
+}
+
+function openProfilePopup(email){
+  const isMe = email===currentUserEmail();
+  const label = ownerLabel(email);
+  const nice = label.charAt(0).toUpperCase()+label.slice(1);
+  const idx = knownStaffEmails().indexOf(email);
+  const color = PLANET_COLORS[Math.max(0,idx) % PLANET_COLORS.length];
+  const goals = state.goals.filter(g=>g.ownerEmail===email);
+  const moneyGoals = goals.filter(g=>g.metric==='Commission Earned');
+  const otherGoals = goals.filter(g=>g.metric!=='Commission Earned');
+
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head">
+          <h3 style="display:flex;align-items:center;gap:10px;">
+            <span style="width:26px;height:26px;border-radius:50%;background:${color};box-shadow:0 0 12px ${color};display:inline-block;"></span>
+            ${esc(nice)}${isMe?' (You)':''}
+          </h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="field-label" style="margin-top:0;">Goals</div>
+          ${moneyGoals.length? `<div class="money-goals-list" style="margin-bottom:16px;">${moneyGoals.map(moneyGoalChartHtml).join('')}</div>`:''}
+          ${otherGoals.length? `<div class="stat-grid" style="margin-bottom:16px;">${otherGoals.map(goalCardHtml).join('')}</div>` : (moneyGoals.length? '' : '<div class="empty" style="text-align:left;padding:6px 0 16px;">No goals set yet.</div>')}
+
+          <div class="field-label" style="margin-top:18px;">To-Do List</div>
+          ${isMe? `
+            <div id="profileTodoList" class="todo-list"></div>
+            <div class="todo-add-row">
+              <input type="text" id="profileNewTodoText" placeholder="Add a to-do…">
+              <input type="date" id="profileNewTodoDate">
+              <button class="btn gold sm" id="profileAddTodoBtn">Add</button>
+            </div>
+          ` : `<div class="empty" style="text-align:left;padding:6px 0;">To-do lists are private — only ${esc(nice)} can see this one.</div>`}
+        </div>
+        <div class="modal-foot"><button class="btn outline" id="cancelBtn">Close</button></div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+
+  if(otherGoals.length) wireGoalCards(()=>openProfilePopup(email));
+  if(moneyGoals.length) wireMoneyGoalCharts(()=>openProfilePopup(email));
+
+  if(isMe){
+    renderProfileTodos(root, 'profileTodoList');
+    root.querySelector('#profileAddTodoBtn').onclick = async ()=>{
+      const textEl = root.querySelector('#profileNewTodoText');
+      const title = textEl.value.trim();
+      if(!title) return;
+      const dueDate = root.querySelector('#profileNewTodoDate').value || null;
+      const { error } = await supabaseClient.from('todos').insert({ user_id: currentUserId(), title, due_date: dueDate });
+      if(error){ toast('Failed to add: '+error.message); return; }
+      await loadAllData();
+      renderProfileTodos(root, 'profileTodoList');
+      textEl.value = '';
+      root.querySelector('#profileNewTodoDate').value = '';
+    };
+    root.querySelector('#profileNewTodoText').addEventListener('keydown', e=>{
+      if(e.key==='Enter') root.querySelector('#profileAddTodoBtn').click();
+    });
+  }
 }
 
 /* ---------- Activity Log ---------- */
