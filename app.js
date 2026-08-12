@@ -6,7 +6,7 @@ let currentUser = null;
 function currentUserEmail(){ return (currentUser && currentUser.email) || ''; }
 function currentUserId(){ return currentUser && currentUser.id; }
 
-let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[] };
+let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[], meetings:[] };
 
 /* ---------- row <-> app object mappers ---------- */
 function contactFromRow(r){
@@ -60,6 +60,14 @@ function marketCompToRow(c){
     transaction_type:c.transactionType||'Sale', price:c.price||0, square_feet:c.squareFeet||0,
     price_per_sf:c.pricePerSf||0, cap_rate:c.capRate===''?null:Number(c.capRate), transaction_date:c.transactionDate||null,
     source:c.source||null, notes:c.notes||null, owner_email:c.ownerEmail||null };
+}
+function meetingFromRow(r){
+  return { id:r.id, title:r.title, meetingDate:r.meeting_date||'', meetingTime:r.meeting_time||'',
+    notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at };
+}
+function meetingToRow(m){
+  return { title:m.title, meeting_date:m.meetingDate||null, meeting_time:m.meetingTime||null,
+    notes:m.notes||null, owner_email:m.ownerEmail||null };
 }
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
@@ -265,11 +273,16 @@ async function loadAllData(){
   const compsRes = await supabaseClient.from('market_comps').select('*').order('transaction_date',{ascending:false, nullsFirst:false});
   marketCompsSchemaReady = !compsRes.error;
   state.marketComps = marketCompsSchemaReady ? (compsRes.data||[]).map(marketCompFromRow) : [];
+
+  const meetingsRes = await supabaseClient.from('meetings').select('*').order('meeting_date',{ascending:true});
+  meetingsSchemaReady = !meetingsRes.error;
+  state.meetings = meetingsSchemaReady ? (meetingsRes.data||[]).map(meetingFromRow) : [];
   return true;
 }
 let todosGoalsSchemaReady = true;
 let marketCompsSchemaReady = true;
 let listingsSchemaReady = true;
+let meetingsSchemaReady = true;
 
 async function logActivity(type, description, contactId, dealId){
   const { error } = await supabaseClient.from('activities').insert({
@@ -293,6 +306,7 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'todos' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'goals' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'market_comps' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'meetings' }, onRemoteChange)
     .subscribe();
 }
 function onRemoteChange(){
@@ -458,6 +472,27 @@ function todoItemHtml(item){
   </div>`;
 }
 
+function formatTime(t){
+  if(!t) return '';
+  const [h,m] = t.split(':').map(Number);
+  if(isNaN(h)) return '';
+  const period = h>=12 ? 'PM' : 'AM';
+  const h12 = h%12===0 ? 12 : h%12;
+  return `${h12}:${String(m||0).padStart(2,'0')} ${period}`;
+}
+function meetingRowHtml(m){
+  const timeLabel = formatTime(m.meetingTime);
+  return `<div class="row-item" data-id="${m.id}">
+    <div class="avatar">${esc(initials(m.title))}</div>
+    <div class="row-main">
+      <div class="row-title">${esc(m.title)}</div>
+      <div class="row-sub">${fmtDate(m.meetingDate)}${timeLabel? ' · '+esc(timeLabel):''}${m.notes? ' — '+esc(m.notes):''}</div>
+    </div>
+    <span class="owner-tag"><span class="owner-dot">${esc(initials(ownerLabel(m.ownerEmail)))}</span>${esc(ownerLabel(m.ownerEmail))}</span>
+    <button class="icon-btn meetingDelBtn" title="Delete" style="margin-left:8px;"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+  </div>`;
+}
+
 function renderDashboard(){
   const view = document.getElementById('view');
   view.className = 'view';
@@ -481,6 +516,13 @@ function renderDashboard(){
     ...myExpiring.map(l=>({ kind:'listing', id:l.id, label:`Listing expiring: ${l.address}`, dueDate:l.expirationDate, sortDate:l.expirationDate })),
   ].sort((a,b)=> (a.sortDate||'9999').localeCompare(b.sortDate||'9999'));
 
+  const weekRange = periodRange('Weekly');
+  const weekMeetings = state.meetings.filter(m=>{
+    if(!m.meetingDate) return false;
+    const t = new Date(m.meetingDate+'T00:00:00').getTime();
+    return t>=weekRange.start.getTime() && t<=weekRange.end.getTime();
+  }).sort((a,b)=> `${a.meetingDate} ${a.meetingTime||''}`.localeCompare(`${b.meetingDate} ${b.meetingTime||''}`));
+
   view.innerHTML = `
     <div class="page-head">
       <div><h1>Dashboard</h1><p>Your team's book of business at a glance</p></div>
@@ -497,6 +539,21 @@ function renderDashboard(){
           <input type="text" id="newTodoText" placeholder="Add a to-do…">
           <input type="date" id="newTodoDate" title="Optional due date">
           <button class="btn gold sm" id="addTodoBtn">Add</button>
+        </div>`}
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:20px;">
+      <div class="panel-head"><h3>This Week's Meetings</h3><span class="cell-sub">Keep each other accountable</span></div>
+      <div class="panel-body">
+        ${!meetingsSchemaReady ? `<div class="empty">Run <code>schema_v7.sql</code> to enable meetings.</div>` : `
+        <div id="meetingsList" class="row-list">
+          ${weekMeetings.length? weekMeetings.map(meetingRowHtml).join('') : '<div class="empty">No meetings on the calendar this week.</div>'}
+        </div>
+        <div class="todo-add-row">
+          <input type="text" id="newMeetingTitle" placeholder="Meeting title…">
+          <input type="date" id="newMeetingDate">
+          <input type="time" id="newMeetingTime">
+          <button class="btn gold sm" id="addMeetingBtn">Add</button>
         </div>`}
       </div>
     </div>
@@ -578,6 +635,37 @@ function renderDashboard(){
       if(e.key==='Enter') document.getElementById('addTodoBtn').click();
     });
   }
+
+  if(meetingsSchemaReady){
+    document.querySelectorAll('#meetingsList .row-item').forEach(row=>{
+      const id = row.dataset.id;
+      row.querySelector('.meetingDelBtn').onclick = async ()=>{
+        const { error } = await supabaseClient.from('meetings').delete().eq('id', id);
+        if(error){ toast('Failed: '+error.message); return; }
+        await loadAllData();
+        toast('Meeting removed');
+        renderDashboard();
+      };
+    });
+    document.getElementById('addMeetingBtn').onclick = async ()=>{
+      const titleEl = document.getElementById('newMeetingTitle');
+      const title = titleEl.value.trim();
+      const meetingDate = document.getElementById('newMeetingDate').value;
+      if(!title || !meetingDate){ toast('Enter a title and date'); return; }
+      const meetingTime = document.getElementById('newMeetingTime').value || null;
+      const btn = document.getElementById('addMeetingBtn');
+      btn.disabled = true;
+      const { error } = await supabaseClient.from('meetings').insert(
+        meetingToRow({ title, meetingDate, meetingTime, ownerEmail: currentUserEmail() })
+      );
+      if(error){ toast('Failed to add: '+error.message); btn.disabled=false; return; }
+      await loadAllData();
+      renderDashboard();
+    };
+    document.getElementById('newMeetingTitle').addEventListener('keydown', e=>{
+      if(e.key==='Enter') document.getElementById('addMeetingBtn').click();
+    });
+  }
 }
 
 /* ---------- Prospects ---------- */
@@ -635,7 +723,7 @@ function txnBadge(t){
 function contactRowHtml(c){
   return `
     <tr data-id="${c.id}">
-      <td class="cell-name">${esc(c.name)}</td>
+      <td class="cell-name cell-name-link" style="cursor:pointer;">${esc(c.name)}</td>
       <td>${esc(c.company||'—')}<div class="cell-sub">${esc(c.email||'')}</div></td>
       <td>${esc(c.phone||'—')}</td>
       <td>${esc(c.propertyType||'—')}</td>
@@ -657,6 +745,7 @@ function contactRowHtml(c){
 
 function wireContactRow(tr){
   const id = tr.dataset.id;
+  tr.querySelector('.cell-name-link').onclick = ()=>openContactViewModal(contactById(id));
   tr.querySelector('.editBtn').onclick = ()=>openContactModal(contactById(id));
   tr.querySelector('.emailBtn').onclick = ()=>openEmailComposer(contactById(id));
   tr.querySelector('.delBtn').onclick = async ()=>{
@@ -700,6 +789,49 @@ function renderProspectsTable(){
   }
 
   body.querySelectorAll('tr[data-id]').forEach(wireContactRow);
+}
+
+function openContactViewModal(contact){
+  if(!contact) return;
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>${esc(contact.name)}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="owner-tag" style="margin-bottom:16px;"><span class="owner-dot">${esc(initials(ownerLabel(contact.ownerEmail)))}</span>Owned by ${esc(ownerLabel(contact.ownerEmail))} · added ${fmtDate(contact.createdAt)}</div>
+          <div class="view-detail-grid">
+            <div><div class="ik">Company</div><div class="iv">${esc(contact.company||'—')}</div></div>
+            <div><div class="ik">Phone</div><div class="iv">${esc(contact.phone||'—')}</div></div>
+            <div><div class="ik">Email</div><div class="iv">${esc(contact.email||'—')}</div></div>
+            <div><div class="ik">Status</div><div class="iv"><span class="badge ${contact.status.toLowerCase()}">${esc(contact.status)}</span></div></div>
+            <div><div class="ik">Property Type</div><div class="iv">${esc(contact.propertyType||'—')}</div></div>
+            <div><div class="ik">Looking to</div><div class="iv">${txnBadge(contact.transactionType)}</div></div>
+            <div><div class="ik">Source</div><div class="iv">${esc(contact.source||'—')}</div></div>
+            <div><div class="ik">Next Follow-up</div><div class="iv">${contact.nextFollowUp? fmtDate(contact.nextFollowUp):'—'}</div></div>
+            <div><div class="ik">Last Contacted</div><div class="iv">${contact.lastContactedAt? fmtDate(contact.lastContactedAt):'Never'}</div></div>
+          </div>
+          <div class="field-label">Property Address</div>
+          <div style="font-size:13.5px;margin-bottom:16px;">${esc(contact.address||'—')}</div>
+          <div class="field-label">Notes</div>
+          <div style="background:var(--bg);border-radius:9px;padding:10px 12px;font-size:13px;min-height:20px;">${contact.notes? esc(contact.notes) : '<span class="cell-sub">No notes yet.</span>'}</div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn outline" id="viewCallBtn">Call</button>
+          <button class="btn outline" id="viewEmailBtn">Email</button>
+          <button class="btn outline" id="viewEditBtn">Edit</button>
+          <button class="btn gold" id="cancelBtn">Close</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  root.querySelector('#viewCallBtn').onclick = ()=>{ close(); coldCallActiveId = contact.id; location.hash = '#coldcall'; };
+  root.querySelector('#viewEmailBtn').onclick = ()=>{ close(); openEmailComposer(contact); };
+  root.querySelector('#viewEditBtn').onclick = ()=>{ close(); openContactModal(contact); };
 }
 
 function openContactModal(contact){
@@ -1087,6 +1219,7 @@ function renderDeals(){
         if(error){ toast('Failed to move deal: '+error.message); return; }
         await logActivity('deal', `Moved deal <b>${esc(deal.title)}</b> from ${oldStage} to ${newStage} <span class="cell-sub">(by ${esc(ownerLabel(currentUserEmail()))})</span>`, deal.contactId, deal.id);
         await loadAllData();
+        if(newStage==='Closed Won') celebrateDealWon();
       }
       renderDeals();
     });
@@ -1152,6 +1285,7 @@ function openDealModal(deal, defaultStage){
     };
     const btn = document.getElementById('saveDealBtn');
     btn.disabled = true;
+    const justWon = data.stage==='Closed Won' && (!isEdit || deal.stage!=='Closed Won');
     if(isEdit){
       const { error } = await supabaseClient.from('deals').update(dealToRow({ ...data, ownerEmail: deal.ownerEmail })).eq('id', deal.id).select();
       if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
@@ -1166,6 +1300,7 @@ function openDealModal(deal, defaultStage){
     }
     await loadAllData();
     close(); renderDeals();
+    if(justWon) celebrateDealWon();
   };
 }
 
@@ -1922,6 +2057,7 @@ const NEWS_FEEDS = [
   { name:'Connect CRE', url:'https://www.connectcre.com/feed/', tag:'National CRE' },
   { name:'WisBusiness', url:'https://wisbusiness.com/feed/', tag:'Wisconsin' },
   { name:'Urban Milwaukee', url:'https://urbanmilwaukee.com/feed/', tag:'Wisconsin' },
+  { name:'NPR News', url:'https://feeds.npr.org/1001/rss.xml', tag:'US News' },
 ];
 const RSS2JSON_API_KEY = '';
 const NEWS_CACHE_KEY = 'cre_crm_news_cache_v1';
@@ -1973,7 +2109,7 @@ function renderNewsFeedBody(cache){
     <div class="news-list">
       ${cache.items.slice(0,30).map(item=>`
         <a class="news-row" href="${esc(item.link)}" target="_blank" rel="noopener noreferrer">
-          <span class="badge ${item.tag==='Wisconsin'?'client':'cold'}">${esc(item.tag)}</span>
+          <span class="badge ${item.tag==='Wisconsin'?'client':item.tag==='US News'?'warm':'cold'}">${esc(item.tag)}</span>
           <span class="news-title">${esc(item.title)}</span>
           <span class="cell-sub" style="flex-shrink:0;">${esc(item.source)} · ${item.pubDate? fmtDate(item.pubDate):''}</span>
         </a>`).join('')}
@@ -2498,6 +2634,62 @@ function showWelcomePopup(){
   }, 3000);
 }
 
+function celebrateDealWon(){
+  const colors = ['#c94b3f','#e0b23a','#3aa655','#5b8def','#c74fc0','#4fc3c7'];
+  const container = document.createElement('div');
+  container.className = 'confetti-container';
+  for(let i=0;i<90;i++){
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    const color = colors[Math.floor(Math.random()*colors.length)];
+    const left = Math.random()*100;
+    const delay = Math.random()*0.4;
+    const duration = 2.2 + Math.random()*1.4;
+    const rotate = Math.round(Math.random()*360);
+    const drift = Math.round((Math.random()-0.5)*160);
+    const size = 6 + Math.random()*6;
+    piece.style.cssText = `left:${left}%;background:${color};animation-delay:${delay}s;animation-duration:${duration}s;width:${size}px;height:${size*0.4}px;--drift:${drift}px;--rot:${rotate}deg;`;
+    container.appendChild(piece);
+  }
+  document.body.appendChild(container);
+
+  const banner = document.createElement('div');
+  banner.className = 'welcome-popup';
+  banner.style.top = '90px';
+  banner.innerHTML = `<span class="wp-icon">🎉</span><span>Deal closed — nice work!</span>`;
+  document.body.appendChild(banner);
+  requestAnimationFrame(()=>banner.classList.add('show'));
+  setTimeout(()=>{
+    banner.classList.remove('show');
+    setTimeout(()=>banner.remove(), 300);
+  }, 3200);
+  setTimeout(()=>container.remove(), 4000);
+}
+
+function maybeShowInactivityNudge(){
+  const nudgeKey = 'cre_crm_last_nudge_' + (currentUserId()||currentUserEmail());
+  const today = new Date().toISOString().slice(0,10);
+  try{ if(localStorage.getItem(nudgeKey) === today) return; }catch(e){}
+  const myContacts = state.contacts.filter(c=>c.ownerEmail===currentUserEmail());
+  const mostRecent = myContacts.reduce((latest,c)=>{
+    const t = new Date(c.createdAt).getTime();
+    return t>latest ? t : latest;
+  }, 0);
+  const hoursSince = mostRecent ? (Date.now()-mostRecent)/3600000 : Infinity;
+  if(hoursSince < 24) return;
+  try{ localStorage.setItem(nudgeKey, today); }catch(e){}
+  const el = document.createElement('div');
+  el.className = 'welcome-popup';
+  el.style.top = '90px';
+  el.innerHTML = `<span class="wp-icon">🔥</span><span>No new contacts added today — lock in and get to grinding!</span>`;
+  document.body.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('show'));
+  setTimeout(()=>{
+    el.classList.remove('show');
+    setTimeout(()=>el.remove(), 300);
+  }, 5000);
+}
+
 async function showApp(){
   document.getElementById('authRoot').innerHTML = '';
   document.getElementById('app').style.display = '';
@@ -2505,7 +2697,10 @@ async function showApp(){
   showWelcomePopup();
   const ok = await loadAllData();
   subscribeRealtime();
-  if(ok) navigate();
+  if(ok){
+    navigate();
+    setTimeout(maybeShowInactivityNudge, 3500);
+  }
 }
 
 document.getElementById('signOutBtn').onclick = async ()=>{
