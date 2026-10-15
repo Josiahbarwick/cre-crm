@@ -39,4 +39,12 @@ create policy "auth insert leads" on leads for insert with check (auth.role() = 
 create policy "auth update leads" on leads for update using (auth.role() = 'authenticated');
 create policy "auth delete leads" on leads for delete using (auth.role() = 'authenticated');
 
-alter publication supabase_realtime add table leads;
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'leads'
+  ) then
+    alter publication supabase_realtime add table leads;
+  end if;
+end $$;
