@@ -16,7 +16,8 @@ SUBREDDITS = [
 
 # Queries run inside each subreddit above (via restrict_sr=on). Covers all
 # three angles: tenants/buyers seeking space (demand) and owners wanting to
-# sell or lease out a property (supply).
+# sell or lease out a property (supply) — including small, mom-and-pop
+# businesses closing, retiring, or selling that often own their building.
 SUBREDDIT_QUERIES = [
     "office space",
     "warehouse",
@@ -34,6 +35,15 @@ SUBREDDIT_QUERIES = [
     "looking for a tenant",
     "vacant commercial space",
     "for sale by owner commercial",
+    "business for sale",
+    "selling my business",
+    "closing the business",
+    "going out of business",
+    "retiring selling business",
+    "business and building for sale",
+    "bar for sale",
+    "restaurant for sale",
+    "liquor store for sale",
 ]
 
 # Queries run against all of Reddit (not subreddit-restricted), kept
@@ -50,6 +60,12 @@ SITEWIDE_REDDIT_QUERIES = [
     "selling commercial property Wisconsin",
     "landlord seeking tenant Wisconsin",
     "commercial property Wisconsin for sale",
+    "small business for sale Wisconsin",
+    "bar for sale Wisconsin",
+    "restaurant for sale Wisconsin",
+    "liquor store for sale Wisconsin",
+    "business closing Wisconsin",
+    "supper club for sale Wisconsin",
 ]
 
 # Google News RSS search queries (no API key required). Google News does
@@ -79,6 +95,15 @@ GOOGLE_NEWS_QUERIES = [
     "Wisconsin landlord seeking tenant",
     "Wisconsin commercial property for sale",
     "Wisconsin retail building for sale",
+    "Wisconsin small business for sale",
+    "Wisconsin bar for sale",
+    "Wisconsin restaurant closing",
+    "Wisconsin liquor store for sale",
+    "Wisconsin owner retiring business",
+    "Wisconsin longtime business closing",
+    "Wisconsin supper club for sale",
+    "Wisconsin tavern for sale",
+    "Wisconsin business for sale by owner",
 ]
 
 # Order matters: specific city names are checked before the generic
@@ -122,6 +147,15 @@ SELL_KEYWORDS = [
     "sell my commercial property", "sell our commercial property",
     "listing our property for sale", "owner looking to sell",
     "building for sale by owner",
+    # Mom-and-pop / small-business distress & transition signals — these
+    # often come bundled with the real estate (owner-occupied small
+    # businesses: bars, restaurants, liquor stores, shops).
+    "business for sale", "selling my business", "selling our business",
+    "selling the business", "business and building for sale",
+    "turnkey business for sale", "owner retiring", "retiring and selling",
+    "closing after", "closing our doors", "closing the business",
+    "going out of business", "after years in business", "liquidation sale",
+    "business for sale by owner",
 ]
 
 LEASE_OUT_KEYWORDS = [
@@ -138,7 +172,10 @@ PROPERTY_TYPE_KEYWORDS = {
     "Multifamily": ["apartment building", "multifamily", "apartment complex"],
     "Land": ["vacant land", "acreage", "land for sale"],
     "Medical": ["medical office", "medical building", "clinic space"],
-    "Hospitality": ["hotel", "motel"],
+    "Hospitality": [
+        "hotel", "motel", "bar for sale", "tavern", "supper club", "restaurant for sale",
+        "liquor store", "bowling alley", "gas station",
+    ],
 }
 
 # Minimum score to keep a result worth showing the broker.

@@ -3090,7 +3090,10 @@ function renderLeads(){
   view.innerHTML = `
     <div class="page-head">
       <div><h1>Lead Finder</h1><p>Wisconsin CRE buy, sell &amp; lease signals pulled from Reddit &amp; news, plus anything you spot yourself</p></div>
-      <button class="btn gold" id="addLeadBtn">+ Add Lead</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn outline" id="bookmarkletBtn">🔖 Get Bookmarklet</button>
+        <button class="btn gold" id="addLeadBtn">+ Add Lead</button>
+      </div>
     </div>
     <div class="stat-grid" style="margin-bottom:16px;">
       ${LEAD_STATUSES.map(s=>`
@@ -3111,6 +3114,7 @@ function renderLeads(){
     </div>
   `;
   document.getElementById('addLeadBtn').onclick = ()=>openLeadModal();
+  document.getElementById('bookmarkletBtn').onclick = openBookmarkletModal;
   document.getElementById('filterLeadSource').onchange = e=>{ leadFilterSource = e.target.value; renderLeadsTable(); };
   document.getElementById('filterLeadSignal').onchange = e=>{ leadFilterSignal = e.target.value; renderLeadsTable(); };
   document.getElementById('filterLeadStatus').onchange = e=>{ leadFilterStatus = e.target.value; renderLeads(); };
@@ -3118,6 +3122,37 @@ function renderLeads(){
     card.onclick = ()=>{ leadFilterStatus = leadFilterStatus===card.dataset.status ? '' : card.dataset.status; renderLeads(); };
   });
   renderLeadsTable();
+}
+
+// The production URL this bookmarklet should hand off to. If you ever move
+// the CRM to a different host, update this. This stays as literal JS source
+// (not URI-encoded) — a javascript: href is HTML-entity-decoded by the
+// browser, not percent-decoded, so esc() below is the only escaping needed.
+const LEAD_FINDER_SITE_URL = 'https://josiahbarwick.github.io/cre-crm/';
+const LEAD_BOOKMARKLET_HREF = `javascript:(function(){var u=encodeURIComponent(location.href);var t=encodeURIComponent(document.title);window.open('${LEAD_FINDER_SITE_URL}?quickadd=1&url='+u+'&title='+t+'#leads','_blank');})();`;
+
+function openBookmarkletModal(){
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>🔖 Save-to-Lead-Finder Bookmarklet</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <p style="margin-top:0;">Drag this button to your browser's bookmarks bar:</p>
+          <p style="text-align:center;margin:18px 0;">
+            <a href="${esc(LEAD_BOOKMARKLET_HREF)}" class="btn gold" style="display:inline-block;">📌 Save to Lead Finder</a>
+          </p>
+          <p class="cell-sub">Next time you're looking at a Facebook post, LinkedIn post, or anything else — in a group, on Marketplace, wherever — click that bookmark. It opens this Lead Finder in a new tab with the Add Lead form already filled in with that page's link and title. Takes about 2 seconds, and works whether it's you or someone you hand Facebook-watching off to.</p>
+          <p class="cell-sub">If your bookmarks bar is hidden, most browsers show it with <b>Cmd/Ctrl + Shift + B</b>.</p>
+        </div>
+        <div class="modal-foot"><button class="btn outline" id="cancelBtn">Close</button></div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
 }
 
 function leadRowHtml(l){
@@ -3175,9 +3210,9 @@ function renderLeadsTable(){
   });
 }
 
-function openLeadModal(lead){
+function openLeadModal(lead, prefill){
   const isEdit = !!lead;
-  const l = lead || { source:'LinkedIn', sourceUrl:'', title:'', snippet:'', locationText:'', signalType:'Unclear', propertyTypeGuess:PROPERTY_TYPES[0], status:'New', notes:'' };
+  const l = lead || { source:'LinkedIn', sourceUrl:'', title:'', snippet:'', locationText:'', signalType:'Unclear', propertyTypeGuess:PROPERTY_TYPES[0], status:'New', notes:'', ...(prefill||{}) };
   const html = `
     <div class="modal-overlay">
       <div class="modal">
@@ -3556,6 +3591,22 @@ function maybeShowInactivityNudge(){
   }, 5000);
 }
 
+// Lets the "Save to Lead Finder" bookmarklet (see leads page) hand off a
+// page's URL/title via ?quickadd=1&url=...&title=...#leads — opens the Add
+// Lead form prefilled instead of making you copy/paste it by hand.
+function handleQuickAdd(){
+  const params = new URLSearchParams(location.search);
+  if(params.get('quickadd') !== '1') return;
+  const url = params.get('url') || '';
+  const title = params.get('title') || '';
+  let source = 'Other';
+  if(/facebook\.com/i.test(url)) source = 'Facebook';
+  else if(/linkedin\.com/i.test(url)) source = 'LinkedIn';
+  history.replaceState(null, '', location.pathname + '#leads');
+  if(location.hash !== '#leads'){ location.hash = '#leads'; navigate(); }
+  setTimeout(()=> openLeadModal(null, { source, sourceUrl:url, title }), 60);
+}
+
 async function showApp(){
   document.getElementById('authRoot').innerHTML = '';
   document.getElementById('app').style.display = '';
@@ -3566,6 +3617,7 @@ async function showApp(){
   if(ok){
     navigate();
     setTimeout(maybeShowInactivityNudge, 3500);
+    handleQuickAdd();
   }
 }
 
