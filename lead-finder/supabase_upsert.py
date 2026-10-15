@@ -29,8 +29,10 @@ def upsert_leads(rows, batch_size=50):
         "Authorization": f"Bearer {service_key}",
         "Content-Type": "application/json",
         # Skip rows whose source_url already exists instead of overwriting
-        # a status/notes the broker already set on them.
-        "Prefer": "resolution=ignore-duplicates,return=minimal",
+        # a status/notes the broker already set on them. return=representation
+        # (rather than minimal) so the response tells us how many rows were
+        # *actually* newly inserted, vs. sent-but-already-seen.
+        "Prefer": "resolution=ignore-duplicates,return=representation",
     }
 
     inserted = 0
@@ -40,8 +42,8 @@ def upsert_leads(rows, batch_size=50):
         req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                resp.read()
-            inserted += len(batch)
+                result = json.loads(resp.read())
+            inserted += len(result)
         except urllib.error.HTTPError as e:
             print(f"  [supabase] batch failed ({e.code}): {e.read().decode('utf-8', 'replace')}")
     return inserted
