@@ -6,7 +6,7 @@ let currentUser = null;
 function currentUserEmail(){ return (currentUser && currentUser.email) || ''; }
 function currentUserId(){ return currentUser && currentUser.id; }
 
-let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[], meetings:[], poolGames:[] };
+let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[], meetings:[], poolGames:[], leads:[] };
 
 /* ---------- row <-> app object mappers ---------- */
 function contactFromRow(r){
@@ -72,6 +72,18 @@ function meetingToRow(m){
 function poolGameFromRow(r){
   return { id:r.id, players:r.players||[], winnerName:r.winner_name||'', playedAt:r.played_at, loggedBy:r.logged_by||'' };
 }
+function leadFromRow(r){
+  return { id:r.id, source:r.source||'Manual', sourceUrl:r.source_url||'', title:r.title||'', snippet:r.snippet||'',
+    author:r.author||'', postedAt:r.posted_at||null, locationText:r.location_text||'', signalType:r.signal_type||'Unclear',
+    propertyTypeGuess:r.property_type_guess||'', keywordsMatched:r.keywords_matched||[], confidenceScore:r.confidence_score||0,
+    status:r.status||'New', contactId:r.contact_id||null, notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at };
+}
+function leadToRow(l){
+  return { source:l.source||'Manual', source_url:l.sourceUrl||null, title:l.title, snippet:l.snippet||null,
+    author:l.author||null, posted_at:l.postedAt||null, location_text:l.locationText||null, signal_type:l.signalType||'Unclear',
+    property_type_guess:l.propertyTypeGuess||null, keywords_matched:l.keywordsMatched||[], confidence_score:l.confidenceScore||0,
+    status:l.status||'New', contact_id:l.contactId||null, notes:l.notes||null, owner_email:l.ownerEmail||null };
+}
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
     commissionPct:r.commission_pct||0, stage:r.stage, closeDate:r.close_date||'', contactId:r.contact_id||null,
@@ -117,6 +129,9 @@ const GOAL_METRICS = ['Calls Logged','New Listings','Deals Closed','Commission E
 const GOAL_PERIODS = ['Daily','Weekly','Monthly'];
 const COMP_TRANSACTION_TYPES = ['Sale','Lease'];
 const PLANET_COLORS = ['#5b8def','#e2703a','#3aa655','#c74fc0','#e0b23a','#4fc3c7','#e05a6e','#8a6fe0'];
+const LEAD_SOURCES = ['Reddit','Google News','LinkedIn','Facebook','Referral','Other'];
+const LEAD_SIGNAL_TYPES = ['Buy','Lease','Buy/Lease','Unclear'];
+const LEAD_STATUSES = ['New','Reviewed','Contacted','Converted','Dismissed'];
 
 /* ---------- helpers ---------- */
 function money(n){
@@ -328,6 +343,10 @@ async function loadAllData(){
   const poolRes = await supabaseClient.from('pool_games').select('*').order('played_at',{ascending:false});
   poolGamesSchemaReady = !poolRes.error;
   state.poolGames = poolGamesSchemaReady ? (poolRes.data||[]).map(poolGameFromRow) : [];
+
+  const leadsRes = await supabaseClient.from('leads').select('*').order('created_at',{ascending:false});
+  leadsSchemaReady = !leadsRes.error;
+  state.leads = leadsSchemaReady ? (leadsRes.data||[]).map(leadFromRow) : [];
   return true;
 }
 let todosGoalsSchemaReady = true;
@@ -335,6 +354,7 @@ let marketCompsSchemaReady = true;
 let listingsSchemaReady = true;
 let meetingsSchemaReady = true;
 let poolGamesSchemaReady = true;
+let leadsSchemaReady = true;
 
 async function logActivity(type, description, contactId, dealId){
   const { error } = await supabaseClient.from('activities').insert({
@@ -360,6 +380,7 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'market_comps' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'meetings' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'pool_games' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'leads' }, onRemoteChange)
     .subscribe();
 }
 function onRemoteChange(){
@@ -490,7 +511,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, commissions: renderCommissions, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, pool: renderPool, activity: renderActivity };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, commissions: renderCommissions, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, pool: renderPool, activity: renderActivity, leads: renderLeads };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -3035,6 +3056,251 @@ function renderActivity(){
       </div>
     </div></div>
   `;
+}
+
+/* ---------- Lead Finder ---------- */
+let leadFilterStatus = 'New';
+let leadFilterSource = '';
+let leadFilterSignal = '';
+
+const LEAD_STATUS_BADGE_CLASS = { New:'hot', Reviewed:'warm', Contacted:'cold', Converted:'client', Dismissed:'dead' };
+const LEAD_SIGNAL_BADGE_CLASS = { Buy:'hot', Lease:'warm', 'Buy/Lease':'client', Unclear:'dead' };
+const LEAD_SIGNAL_TO_TXN = { Buy:'Buyer', Lease:'Tenant', 'Buy/Lease':'Both', Unclear:'' };
+
+function filteredLeads(){
+  let list = state.leads;
+  if(leadFilterStatus) list = list.filter(l=>l.status===leadFilterStatus);
+  if(leadFilterSource) list = list.filter(l=>l.source===leadFilterSource);
+  if(leadFilterSignal) list = list.filter(l=>l.signalType===leadFilterSignal);
+  const q = currentSearch.toLowerCase();
+  if(q) list = list.filter(l => (l.title+' '+l.snippet+' '+l.locationText).toLowerCase().includes(q));
+  return list;
+}
+
+function renderLeads(){
+  const view = document.getElementById('view');
+  view.className = 'view';
+  if(!leadsSchemaReady){
+    view.innerHTML = `<div class="page-head"><div><h1>Lead Finder</h1></div></div>
+      <div class="panel"><div class="panel-body"><div class="empty">Run <code>schema_v11.sql</code> in your Supabase project's SQL editor to enable the Lead Finder, then reload.</div></div></div>`;
+    return;
+  }
+  const counts = {};
+  LEAD_STATUSES.forEach(s=> counts[s] = state.leads.filter(l=>l.status===s).length);
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Lead Finder</h1><p>Wisconsin CRE buy/lease signals pulled from Reddit &amp; news, plus anything you spot yourself</p></div>
+      <button class="btn gold" id="addLeadBtn">+ Add Lead</button>
+    </div>
+    <div class="stat-grid" style="margin-bottom:16px;">
+      ${LEAD_STATUSES.map(s=>`
+        <div class="stat-card" data-status="${esc(s)}" style="cursor:pointer;${leadFilterStatus===s?'outline:2px solid var(--gold);':''}">
+          <div class="label">${esc(s)}</div><div class="value">${counts[s]}</div>
+        </div>`).join('')}
+    </div>
+    <div class="filters-row">
+      <select id="filterLeadSource"><option value="">All sources</option>${LEAD_SOURCES.map(s=>`<option value="${esc(s)}" ${s===leadFilterSource?'selected':''}>${esc(s)}</option>`).join('')}</select>
+      <select id="filterLeadSignal"><option value="">Buy &amp; Lease</option>${LEAD_SIGNAL_TYPES.map(s=>`<option value="${esc(s)}" ${s===leadFilterSignal?'selected':''}>${esc(s)} only</option>`).join('')}</select>
+      <select id="filterLeadStatus"><option value="">All statuses</option>${LEAD_STATUSES.map(s=>`<option value="${esc(s)}" ${s===leadFilterStatus?'selected':''}>${esc(s)}</option>`).join('')}</select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Found</th><th>Source</th><th>Signal</th><th>Property</th><th>Location</th><th>Title</th><th>Score</th><th>Status</th><th></th></tr></thead>
+        <tbody id="leadsBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('addLeadBtn').onclick = ()=>openLeadModal();
+  document.getElementById('filterLeadSource').onchange = e=>{ leadFilterSource = e.target.value; renderLeadsTable(); };
+  document.getElementById('filterLeadSignal').onchange = e=>{ leadFilterSignal = e.target.value; renderLeadsTable(); };
+  document.getElementById('filterLeadStatus').onchange = e=>{ leadFilterStatus = e.target.value; renderLeads(); };
+  view.querySelectorAll('.stat-card[data-status]').forEach(card=>{
+    card.onclick = ()=>{ leadFilterStatus = leadFilterStatus===card.dataset.status ? '' : card.dataset.status; renderLeads(); };
+  });
+  renderLeadsTable();
+}
+
+function leadRowHtml(l){
+  const sourceLink = l.sourceUrl ? `<a href="${esc(l.sourceUrl)}" target="_blank" rel="noopener noreferrer">${esc(l.source)}</a>` : esc(l.source);
+  return `
+    <tr data-id="${l.id}">
+      <td class="cell-sub">${timeAgo(l.createdAt)}</td>
+      <td>${sourceLink}</td>
+      <td><span class="badge ${LEAD_SIGNAL_BADGE_CLASS[l.signalType]||'dead'}">${esc(l.signalType)}</span></td>
+      <td>${esc(l.propertyTypeGuess||'—')}</td>
+      <td>${esc(l.locationText||'—')}</td>
+      <td class="cell-name">${esc(l.title)}<div class="cell-sub">${esc((l.snippet||'').slice(0,140))}${(l.snippet||'').length>140?'…':''}</div></td>
+      <td>${Math.round(l.confidenceScore)}</td>
+      <td>
+        <select class="leadStatusSelect">${LEAD_STATUSES.map(s=>`<option value="${esc(s)}" ${s===l.status?'selected':''}>${esc(s)}</option>`).join('')}</select>
+      </td>
+      <td>
+        <div class="actions-cell">
+          ${l.status!=='Converted' ? `<button class="btn outline sm convertLeadBtn">Convert</button>` : ''}
+          <button class="icon-btn editLeadBtn" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+          <button class="icon-btn delLeadBtn" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderLeadsTable(){
+  const body = document.getElementById('leadsBody');
+  if(!body) return;
+  const list = filteredLeads();
+  body.innerHTML = list.length ? list.map(leadRowHtml).join('') :
+    `<tr><td colspan="9"><div class="empty">No leads here yet. Run the lead-finder script (see <code>lead-finder/README.md</code>) or add one manually.</div></td></tr>`;
+  body.querySelectorAll('tr[data-id]').forEach(tr=>{
+    const id = tr.dataset.id;
+    const lead = state.leads.find(l=>l.id===id);
+    tr.querySelector('.leadStatusSelect').onchange = async e=>{
+      const { error } = await supabaseClient.from('leads').update({ status:e.target.value }).eq('id', id);
+      if(error){ toast('Update failed: '+error.message); return; }
+      await loadAllData();
+      renderLeads();
+    };
+    tr.querySelector('.editLeadBtn').onclick = ()=>openLeadModal(lead);
+    const convertBtn = tr.querySelector('.convertLeadBtn');
+    if(convertBtn) convertBtn.onclick = ()=>openConvertLeadModal(lead);
+    tr.querySelector('.delLeadBtn').onclick = async ()=>{
+      if(confirm('Delete this lead?')){
+        const { error } = await supabaseClient.from('leads').delete().eq('id', id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData();
+        toast('Lead deleted');
+        renderLeads();
+      }
+    };
+  });
+}
+
+function openLeadModal(lead){
+  const isEdit = !!lead;
+  const l = lead || { source:'LinkedIn', sourceUrl:'', title:'', snippet:'', locationText:'', signalType:'Unclear', propertyTypeGuess:PROPERTY_TYPES[0], status:'New', notes:'' };
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>${isEdit?'Edit Lead':'Add Lead'}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <p class="cell-sub" style="margin-top:0;">Spotted something in a LinkedIn or Facebook group? Paste it in here — it'll show up alongside the auto-found leads.</p>
+          <div class="form-grid">
+            <label class="full">Title / headline<input type="text" id="l_title" value="${esc(l.title)}" placeholder="e.g. Tenant looking for 3,000 SF office in Waukesha"></label>
+            <label>Source<select id="l_source">${LEAD_SOURCES.map(s=>`<option ${s===l.source?'selected':''}>${s}</option>`).join('')}</select></label>
+            <label>Link (optional)<input type="url" id="l_url" value="${esc(l.sourceUrl)}" placeholder="https://…"></label>
+            <label>Signal<select id="l_signal">${LEAD_SIGNAL_TYPES.map(s=>`<option ${s===l.signalType?'selected':''}>${s}</option>`).join('')}</select></label>
+            <label>Property Type<select id="l_ptype">${PROPERTY_TYPES.map(t=>`<option ${t===l.propertyTypeGuess?'selected':''}>${t}</option>`).join('')}</select></label>
+            <label>Location<input type="text" id="l_location" value="${esc(l.locationText)}" placeholder="e.g. Waukesha, WI"></label>
+            <label>Status<select id="l_status">${LEAD_STATUSES.map(s=>`<option ${s===l.status?'selected':''}>${s}</option>`).join('')}</select></label>
+            <label class="full">Details / notes<textarea id="l_snippet" placeholder="Paste the post text or whatever context you have…">${esc(l.snippet)}</textarea></label>
+          </div>
+        </div>
+        <div class="modal-foot">
+          ${isEdit? '<button class="btn danger" id="deleteLeadBtn" style="margin-right:auto;">Delete</button>':''}
+          <button class="btn outline" id="cancelBtn">Cancel</button>
+          <button class="btn gold" id="saveLeadBtn">${isEdit?'Save Changes':'Add Lead'}</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  if(isEdit){
+    root.querySelector('#deleteLeadBtn').onclick = async ()=>{
+      if(confirm('Delete this lead?')){
+        const { error } = await supabaseClient.from('leads').delete().eq('id', l.id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData(); toast('Lead deleted'); close(); renderLeads();
+      }
+    };
+  }
+  root.querySelector('#saveLeadBtn').onclick = async ()=>{
+    const title = document.getElementById('l_title').value.trim();
+    if(!title){ toast('Title is required'); return; }
+    const data = {
+      title,
+      source: document.getElementById('l_source').value,
+      sourceUrl: document.getElementById('l_url').value.trim(),
+      signalType: document.getElementById('l_signal').value,
+      propertyTypeGuess: document.getElementById('l_ptype').value,
+      locationText: document.getElementById('l_location').value.trim(),
+      status: document.getElementById('l_status').value,
+      snippet: document.getElementById('l_snippet').value.trim(),
+    };
+    const btn = document.getElementById('saveLeadBtn');
+    btn.disabled = true;
+    if(isEdit){
+      const { error } = await supabaseClient.from('leads').update(leadToRow({ ...l, ...data })).eq('id', l.id);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      toast('Lead updated');
+    } else {
+      const row = leadToRow({ ...data, keywordsMatched:[], confidenceScore:100, ownerEmail: currentUserEmail() });
+      const { error } = await supabaseClient.from('leads').insert(row);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      toast('Lead added');
+    }
+    await loadAllData();
+    close();
+    if(document.getElementById('leadsBody')) renderLeads();
+  };
+}
+
+function openConvertLeadModal(lead){
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal">
+        <div class="modal-head"><h3>Convert to Contact</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <p class="cell-sub" style="margin-top:0;">Fill in who this lead actually is — the rest is prefilled from what we found.</p>
+          <div class="form-grid">
+            <label class="full">Full name<input type="text" id="cv_name" value="${esc(lead.author||'')}" placeholder="Jane Smith"></label>
+            <label>Company<input type="text" id="cv_company" placeholder="Smith Holdings"></label>
+            <label>Property Type<select id="cv_ptype">${PROPERTY_TYPES.map(t=>`<option ${t===(lead.propertyTypeGuess||PROPERTY_TYPES[0])?'selected':''}>${t}</option>`).join('')}</select></label>
+            <label>Looking to<select id="cv_txn"><option value="" ${!LEAD_SIGNAL_TO_TXN[lead.signalType]?'selected':''}>— Unspecified —</option>${TRANSACTION_TYPES.map(t=>`<option ${t===LEAD_SIGNAL_TO_TXN[lead.signalType]?'selected':''}>${t}</option>`).join('')}</select></label>
+            <label class="full">Notes<textarea id="cv_notes">${esc(`Found via ${lead.source}${lead.sourceUrl? ' — '+lead.sourceUrl : ''}\n\n${lead.snippet||''}`)}</textarea></label>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn outline" id="cancelBtn">Cancel</button>
+          <button class="btn gold" id="confirmConvertBtn">Add Contact &amp; Mark Converted</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  root.querySelector('#confirmConvertBtn').onclick = async ()=>{
+    const name = document.getElementById('cv_name').value.trim();
+    if(!name){ toast('Name is required'); return; }
+    const btn = document.getElementById('confirmConvertBtn');
+    btn.disabled = true;
+    const contactRow = contactToRow({
+      name,
+      company: document.getElementById('cv_company').value.trim(),
+      propertyType: document.getElementById('cv_ptype').value,
+      transactionType: document.getElementById('cv_txn').value,
+      status: 'Warm',
+      source: `Lead Finder (${lead.source})`,
+      address: lead.locationText || '',
+      notes: document.getElementById('cv_notes').value.trim(),
+      ownerEmail: currentUserEmail(),
+    });
+    const { data:inserted, error } = await supabaseClient.from('contacts').insert(contactRow).select().single();
+    if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+    await logActivity('contact', `Added new prospect <b>${esc(name)}</b> from Lead Finder <span class="cell-sub">(by ${esc(ownerLabel(currentUserEmail()))})</span>`, inserted.id);
+    const { error: leadErr } = await supabaseClient.from('leads').update({ status:'Converted', contact_id:inserted.id }).eq('id', lead.id);
+    if(leadErr) console.error('lead update failed', leadErr);
+    await loadAllData();
+    toast('Contact added from lead');
+    close();
+    if(document.getElementById('leadsBody')) renderLeads();
+  };
 }
 
 /* ---------- Search ---------- */

@@ -1,0 +1,4 @@
+lead-finder/.env
+lead-finder/*.log
+__pycache__/
+*.pyc
