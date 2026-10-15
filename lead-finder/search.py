@@ -31,6 +31,7 @@ def load_dotenv():
 load_dotenv()
 
 from classify import classify  # noqa: E402
+from enrich import guess_business_name, lookup_contact_info  # noqa: E402
 from sources import fetch_reddit, fetch_google_news  # noqa: E402
 from supabase_upsert import upsert_leads  # noqa: E402
 
@@ -66,6 +67,22 @@ def main():
         })
 
     print(f"{len(rows)} of {len(raw_items)} items scored as relevant leads.")
+
+    print("Looking up public contact info where a business name can be guessed…")
+    enriched = 0
+    for row in rows:
+        name = guess_business_name(row["title"])
+        if not name:
+            continue
+        contact = lookup_contact_info(name, row["location_text"])
+        if not contact:
+            continue
+        row["contact_phone"] = contact.get("phone")
+        row["contact_website"] = contact.get("website")
+        enriched += 1
+    print(f"  found contact info for {enriched} of {len(rows)} leads (best-effort — "
+          f"OpenStreetMap coverage for small WI businesses is spotty, this is a bonus not a guarantee).")
+
     inserted = upsert_leads(rows)
     print(f"Upserted {inserted} rows to Supabase (existing URLs were skipped).")
 

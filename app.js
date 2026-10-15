@@ -76,13 +76,15 @@ function leadFromRow(r){
   return { id:r.id, source:r.source||'Manual', sourceUrl:r.source_url||'', title:r.title||'', snippet:r.snippet||'',
     author:r.author||'', postedAt:r.posted_at||null, locationText:r.location_text||'', signalType:r.signal_type||'Unclear',
     propertyTypeGuess:r.property_type_guess||'', keywordsMatched:r.keywords_matched||[], confidenceScore:r.confidence_score||0,
-    status:r.status||'New', contactId:r.contact_id||null, notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at };
+    status:r.status||'New', contactId:r.contact_id||null, notes:r.notes||'', ownerEmail:r.owner_email||'', createdAt:r.created_at,
+    contactPhone:r.contact_phone||'', contactWebsite:r.contact_website||'' };
 }
 function leadToRow(l){
   return { source:l.source||'Manual', source_url:l.sourceUrl||null, title:l.title, snippet:l.snippet||null,
     author:l.author||null, posted_at:l.postedAt||null, location_text:l.locationText||null, signal_type:l.signalType||'Unclear',
     property_type_guess:l.propertyTypeGuess||null, keywords_matched:l.keywordsMatched||[], confidence_score:l.confidenceScore||0,
-    status:l.status||'New', contact_id:l.contactId||null, notes:l.notes||null, owner_email:l.ownerEmail||null };
+    status:l.status||'New', contact_id:l.contactId||null, notes:l.notes||null, owner_email:l.ownerEmail||null,
+    contact_phone:l.contactPhone||null, contact_website:l.contactWebsite||null };
 }
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
@@ -3062,6 +3064,7 @@ function renderActivity(){
 let leadFilterStatus = 'New';
 let leadFilterSource = '';
 let leadFilterSignal = '';
+let leadSortBy = 'newest';
 
 const LEAD_STATUS_BADGE_CLASS = { New:'hot', Reviewed:'warm', Contacted:'cold', Converted:'client', Dismissed:'dead' };
 const LEAD_SIGNAL_BADGE_CLASS = { Buy:'hot', Lease:'warm', Sell:'cold', 'List for Lease':'client', 'Buy/Lease':'client', 'Sell/List for Lease':'cold', Unclear:'dead' };
@@ -3074,6 +3077,9 @@ function filteredLeads(){
   if(leadFilterSignal) list = list.filter(l=>l.signalType===leadFilterSignal);
   const q = currentSearch.toLowerCase();
   if(q) list = list.filter(l => (l.title+' '+l.snippet+' '+l.locationText).toLowerCase().includes(q));
+  list = list.slice();
+  if(leadSortBy==='score') list.sort((a,b)=> b.confidenceScore-a.confidenceScore);
+  else list.sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt));
   return list;
 }
 
@@ -3105,19 +3111,16 @@ function renderLeads(){
       <select id="filterLeadSource"><option value="">All sources</option>${LEAD_SOURCES.map(s=>`<option value="${esc(s)}" ${s===leadFilterSource?'selected':''}>${esc(s)}</option>`).join('')}</select>
       <select id="filterLeadSignal"><option value="">All signals</option>${LEAD_SIGNAL_TYPES.map(s=>`<option value="${esc(s)}" ${s===leadFilterSignal?'selected':''}>${esc(s)} only</option>`).join('')}</select>
       <select id="filterLeadStatus"><option value="">All statuses</option>${LEAD_STATUSES.map(s=>`<option value="${esc(s)}" ${s===leadFilterStatus?'selected':''}>${esc(s)}</option>`).join('')}</select>
+      <select id="sortLeads"><option value="newest" ${leadSortBy==='newest'?'selected':''}>Newest first</option><option value="score" ${leadSortBy==='score'?'selected':''}>Highest score first</option></select>
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Found</th><th>Source</th><th>Signal</th><th>Property</th><th>Location</th><th>Title</th><th>Score</th><th>Status</th><th></th></tr></thead>
-        <tbody id="leadsBody"></tbody>
-      </table>
-    </div>
+    <div class="lead-cards" id="leadsBody"></div>
   `;
   document.getElementById('addLeadBtn').onclick = ()=>openLeadModal();
   document.getElementById('bookmarkletBtn').onclick = openBookmarkletModal;
   document.getElementById('filterLeadSource').onchange = e=>{ leadFilterSource = e.target.value; renderLeadsTable(); };
   document.getElementById('filterLeadSignal').onchange = e=>{ leadFilterSignal = e.target.value; renderLeadsTable(); };
   document.getElementById('filterLeadStatus').onchange = e=>{ leadFilterStatus = e.target.value; renderLeads(); };
+  document.getElementById('sortLeads').onchange = e=>{ leadSortBy = e.target.value; renderLeadsTable(); };
   view.querySelectorAll('.stat-card[data-status]').forEach(card=>{
     card.onclick = ()=>{ leadFilterStatus = leadFilterStatus===card.dataset.status ? '' : card.dataset.status; renderLeads(); };
   });
@@ -3155,28 +3158,37 @@ function openBookmarkletModal(){
   root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
 }
 
-function leadRowHtml(l){
-  const sourceLink = l.sourceUrl ? `<a href="${esc(l.sourceUrl)}" target="_blank" rel="noopener noreferrer">${esc(l.source)}</a>` : esc(l.source);
+function leadCardHtml(l){
+  const sourceLink = l.sourceUrl ? `<a href="${esc(l.sourceUrl)}" target="_blank" rel="noopener noreferrer">${esc(l.source)} ↗</a>` : esc(l.source);
+  const titleHtml = l.sourceUrl
+    ? `<a href="${esc(l.sourceUrl)}" target="_blank" rel="noopener noreferrer">${esc(l.title)}</a>`
+    : esc(l.title);
+  const contactBits = [];
+  if(l.contactPhone) contactBits.push(`📞 ${esc(l.contactPhone)}`);
+  if(l.contactWebsite) contactBits.push(`<a href="${esc(l.contactWebsite)}" target="_blank" rel="noopener noreferrer">🔗 Website</a>`);
   return `
-    <tr data-id="${l.id}">
-      <td class="cell-sub">${timeAgo(l.createdAt)}</td>
-      <td>${sourceLink}</td>
-      <td><span class="badge ${LEAD_SIGNAL_BADGE_CLASS[l.signalType]||'dead'}">${esc(l.signalType)}</span></td>
-      <td>${esc(l.propertyTypeGuess||'—')}</td>
-      <td>${esc(l.locationText||'—')}</td>
-      <td class="cell-name">${esc(l.title)}<div class="cell-sub">${esc((l.snippet||'').slice(0,140))}${(l.snippet||'').length>140?'…':''}</div></td>
-      <td>${Math.round(l.confidenceScore)}</td>
-      <td>
+    <div class="lead-card ${LEAD_SIGNAL_BADGE_CLASS[l.signalType]||'dead'}" data-id="${l.id}">
+      <div class="lead-card-top">
+        <div class="lead-card-badges">
+          <span class="badge ${LEAD_SIGNAL_BADGE_CLASS[l.signalType]||'dead'}">${esc(l.signalType)}</span>
+          ${l.propertyTypeGuess ? `<span class="badge dead">${esc(l.propertyTypeGuess)}</span>` : ''}
+          ${l.locationText ? `<span class="badge dead">📍 ${esc(l.locationText)}</span>` : ''}
+          <span class="cell-sub">Score ${Math.round(l.confidenceScore)}</span>
+        </div>
+        <span class="cell-sub">${timeAgo(l.createdAt)} · ${sourceLink}</span>
+      </div>
+      <div class="lead-card-title">${titleHtml}</div>
+      ${l.snippet ? `<p class="lead-card-snippet">${esc(l.snippet.slice(0,320))}${l.snippet.length>320?'…':''}</p>` : ''}
+      ${contactBits.length ? `<div class="lead-card-meta" style="margin:-4px 0 10px;">${contactBits.join(' &nbsp;·&nbsp; ')}</div>` : ''}
+      <div class="lead-card-bottom">
         <select class="leadStatusSelect">${LEAD_STATUSES.map(s=>`<option value="${esc(s)}" ${s===l.status?'selected':''}>${esc(s)}</option>`).join('')}</select>
-      </td>
-      <td>
         <div class="actions-cell">
           ${l.status!=='Converted' ? `<button class="btn outline sm convertLeadBtn">Convert</button>` : ''}
           <button class="icon-btn editLeadBtn" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
           <button class="icon-btn delLeadBtn" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
         </div>
-      </td>
-    </tr>
+      </div>
+    </div>
   `;
 }
 
@@ -3184,21 +3196,21 @@ function renderLeadsTable(){
   const body = document.getElementById('leadsBody');
   if(!body) return;
   const list = filteredLeads();
-  body.innerHTML = list.length ? list.map(leadRowHtml).join('') :
-    `<tr><td colspan="9"><div class="empty">No leads here yet. Run the lead-finder script (see <code>lead-finder/README.md</code>) or add one manually.</div></td></tr>`;
-  body.querySelectorAll('tr[data-id]').forEach(tr=>{
-    const id = tr.dataset.id;
+  body.innerHTML = list.length ? list.map(leadCardHtml).join('') :
+    `<div class="empty">No leads here yet. Run the lead-finder script (see <code>lead-finder/README.md</code>) or add one manually.</div>`;
+  body.querySelectorAll('.lead-card[data-id]').forEach(card=>{
+    const id = card.dataset.id;
     const lead = state.leads.find(l=>l.id===id);
-    tr.querySelector('.leadStatusSelect').onchange = async e=>{
+    card.querySelector('.leadStatusSelect').onchange = async e=>{
       const { error } = await supabaseClient.from('leads').update({ status:e.target.value }).eq('id', id);
       if(error){ toast('Update failed: '+error.message); return; }
       await loadAllData();
       renderLeads();
     };
-    tr.querySelector('.editLeadBtn').onclick = ()=>openLeadModal(lead);
-    const convertBtn = tr.querySelector('.convertLeadBtn');
+    card.querySelector('.editLeadBtn').onclick = ()=>openLeadModal(lead);
+    const convertBtn = card.querySelector('.convertLeadBtn');
     if(convertBtn) convertBtn.onclick = ()=>openConvertLeadModal(lead);
-    tr.querySelector('.delLeadBtn').onclick = async ()=>{
+    card.querySelector('.delLeadBtn').onclick = async ()=>{
       if(confirm('Delete this lead?')){
         const { error } = await supabaseClient.from('leads').delete().eq('id', id);
         if(error){ toast('Delete failed: '+error.message); return; }
@@ -3293,9 +3305,10 @@ function openConvertLeadModal(lead){
           <div class="form-grid">
             <label class="full">Full name<input type="text" id="cv_name" value="${esc(lead.author||'')}" placeholder="Jane Smith"></label>
             <label>Company<input type="text" id="cv_company" placeholder="Smith Holdings"></label>
+            <label>Phone<input type="tel" id="cv_phone" value="${esc(lead.contactPhone||'')}" placeholder="(555) 123-4567"></label>
             <label>Property Type<select id="cv_ptype">${PROPERTY_TYPES.map(t=>`<option ${t===(lead.propertyTypeGuess||PROPERTY_TYPES[0])?'selected':''}>${t}</option>`).join('')}</select></label>
             <label>Looking to<select id="cv_txn"><option value="" ${!LEAD_SIGNAL_TO_TXN[lead.signalType]?'selected':''}>— Unspecified —</option>${TRANSACTION_TYPES.map(t=>`<option ${t===LEAD_SIGNAL_TO_TXN[lead.signalType]?'selected':''}>${t}</option>`).join('')}</select></label>
-            <label class="full">Notes<textarea id="cv_notes">${esc(`Found via ${lead.source}${lead.sourceUrl? ' — '+lead.sourceUrl : ''}\n\n${lead.snippet||''}`)}</textarea></label>
+            <label class="full">Notes<textarea id="cv_notes">${esc(`Found via ${lead.source}${lead.sourceUrl? ' — '+lead.sourceUrl : ''}${lead.contactWebsite? '\nPossible website: '+lead.contactWebsite : ''}\n\n${lead.snippet||''}`)}</textarea></label>
           </div>
         </div>
         <div class="modal-foot">
@@ -3318,6 +3331,7 @@ function openConvertLeadModal(lead){
     const contactRow = contactToRow({
       name,
       company: document.getElementById('cv_company').value.trim(),
+      phone: document.getElementById('cv_phone').value.trim(),
       propertyType: document.getElementById('cv_ptype').value,
       transactionType: document.getElementById('cv_txn').value,
       status: 'Warm',
