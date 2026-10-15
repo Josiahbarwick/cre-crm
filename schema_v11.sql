@@ -23,8 +23,11 @@ create table if not exists leads (
 );
 
 -- One row per URL so the finder script can upsert without creating dupes.
--- Manual entries (no URL) are exempt from this constraint.
-create unique index if not exists leads_source_url_key on leads(source_url) where source_url is not null;
+-- A plain (non-partial) unique index, since Postgres's ON CONFLICT upsert
+-- can't target a partial index — NULL source_url (manual entries with no
+-- link) is unaffected since NULLs never collide in a unique index.
+drop index if exists leads_source_url_key;
+create unique index if not exists leads_source_url_key on leads(source_url);
 create index if not exists leads_status_idx on leads(status);
 create index if not exists leads_created_at_idx on leads(created_at desc);
 
