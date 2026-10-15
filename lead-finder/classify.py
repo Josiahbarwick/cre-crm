@@ -1,6 +1,25 @@
-"""Heuristic scoring: is this post/article a Wisconsin CRE buy/lease signal?"""
+"""Heuristic scoring: is this post/article a Wisconsin CRE buy/sell/lease signal?"""
 
-from config import WI_PLACES, BUY_KEYWORDS, LEASE_KEYWORDS, PROPERTY_TYPE_KEYWORDS, SCORE_THRESHOLD
+from config import (
+    WI_PLACES, BUY_KEYWORDS, LEASE_KEYWORDS, SELL_KEYWORDS, LEASE_OUT_KEYWORDS,
+    PROPERTY_TYPE_KEYWORDS, SCORE_THRESHOLD,
+)
+
+# Supply-side (owner wants to sell or fill their space) is checked first and,
+# when present, takes priority over demand-side — a post from an owner
+# actively trying to dispose of or fill a property is the rarer, more
+# valuable find, and the two are rarely both genuinely true of one post.
+SUPPLY_GROUPS = {"Sell": SELL_KEYWORDS, "List for Lease": LEASE_OUT_KEYWORDS}
+DEMAND_GROUPS = {"Buy": BUY_KEYWORDS, "Lease": LEASE_KEYWORDS}
+
+
+def _match_groups(groups, text):
+    matched = {}
+    for label, keywords in groups.items():
+        hits = [k for k in keywords if k in text]
+        if hits:
+            matched[label] = hits
+    return matched
 
 
 def classify(title, snippet, assumed_location=None):
@@ -13,17 +32,18 @@ def classify(title, snippet, assumed_location=None):
                 location_text = place.strip(" ,").title()
                 break
 
-    matched_buy = [k for k in BUY_KEYWORDS if k in text]
-    matched_lease = [k for k in LEASE_KEYWORDS if k in text]
+    supply_matches = _match_groups(SUPPLY_GROUPS, text)
+    demand_matches = _match_groups(DEMAND_GROUPS, text)
 
-    if matched_buy and matched_lease:
-        signal_type = "Buy/Lease"
-    elif matched_buy:
-        signal_type = "Buy"
-    elif matched_lease:
-        signal_type = "Lease"
+    if supply_matches:
+        signal_type = "/".join(supply_matches.keys())
+        matched_signal_kw = [kw for hits in supply_matches.values() for kw in hits]
+    elif demand_matches:
+        signal_type = "/".join(demand_matches.keys())
+        matched_signal_kw = [kw for hits in demand_matches.values() for kw in hits]
     else:
         signal_type = "Unclear"
+        matched_signal_kw = []
 
     property_type_guess = None
     matched_property_kw = []
@@ -41,9 +61,9 @@ def classify(title, snippet, assumed_location=None):
         score += 30
     if property_type_guess:
         score += 15
-    score += min(len(matched_buy) + len(matched_lease), 3) * 5
+    score += min(len(matched_signal_kw), 3) * 5
 
-    matched_keywords = matched_buy + matched_lease + matched_property_kw
+    matched_keywords = matched_signal_kw + matched_property_kw
 
     return {
         "relevant": score >= SCORE_THRESHOLD,

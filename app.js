@@ -130,7 +130,7 @@ const GOAL_PERIODS = ['Daily','Weekly','Monthly'];
 const COMP_TRANSACTION_TYPES = ['Sale','Lease'];
 const PLANET_COLORS = ['#5b8def','#e2703a','#3aa655','#c74fc0','#e0b23a','#4fc3c7','#e05a6e','#8a6fe0'];
 const LEAD_SOURCES = ['Reddit','Google News','LinkedIn','Facebook','Referral','Other'];
-const LEAD_SIGNAL_TYPES = ['Buy','Lease','Buy/Lease','Unclear'];
+const LEAD_SIGNAL_TYPES = ['Buy','Lease','Sell','List for Lease','Buy/Lease','Unclear'];
 const LEAD_STATUSES = ['New','Reviewed','Contacted','Converted','Dismissed'];
 
 /* ---------- helpers ---------- */
@@ -3064,8 +3064,8 @@ let leadFilterSource = '';
 let leadFilterSignal = '';
 
 const LEAD_STATUS_BADGE_CLASS = { New:'hot', Reviewed:'warm', Contacted:'cold', Converted:'client', Dismissed:'dead' };
-const LEAD_SIGNAL_BADGE_CLASS = { Buy:'hot', Lease:'warm', 'Buy/Lease':'client', Unclear:'dead' };
-const LEAD_SIGNAL_TO_TXN = { Buy:'Buyer', Lease:'Tenant', 'Buy/Lease':'Both', Unclear:'' };
+const LEAD_SIGNAL_BADGE_CLASS = { Buy:'hot', Lease:'warm', Sell:'cold', 'List for Lease':'client', 'Buy/Lease':'client', 'Sell/List for Lease':'cold', Unclear:'dead' };
+const LEAD_SIGNAL_TO_TXN = { Buy:'Buyer', Lease:'Tenant', Sell:'Sale', 'List for Lease':'Lease', 'Buy/Lease':'Both', Unclear:'' };
 
 function filteredLeads(){
   let list = state.leads;
@@ -3089,7 +3089,7 @@ function renderLeads(){
   LEAD_STATUSES.forEach(s=> counts[s] = state.leads.filter(l=>l.status===s).length);
   view.innerHTML = `
     <div class="page-head">
-      <div><h1>Lead Finder</h1><p>Wisconsin CRE buy/lease signals pulled from Reddit &amp; news, plus anything you spot yourself</p></div>
+      <div><h1>Lead Finder</h1><p>Wisconsin CRE buy, sell &amp; lease signals pulled from Reddit &amp; news, plus anything you spot yourself</p></div>
       <button class="btn gold" id="addLeadBtn">+ Add Lead</button>
     </div>
     <div class="stat-grid" style="margin-bottom:16px;">
@@ -3100,7 +3100,7 @@ function renderLeads(){
     </div>
     <div class="filters-row">
       <select id="filterLeadSource"><option value="">All sources</option>${LEAD_SOURCES.map(s=>`<option value="${esc(s)}" ${s===leadFilterSource?'selected':''}>${esc(s)}</option>`).join('')}</select>
-      <select id="filterLeadSignal"><option value="">Buy &amp; Lease</option>${LEAD_SIGNAL_TYPES.map(s=>`<option value="${esc(s)}" ${s===leadFilterSignal?'selected':''}>${esc(s)} only</option>`).join('')}</select>
+      <select id="filterLeadSignal"><option value="">All signals</option>${LEAD_SIGNAL_TYPES.map(s=>`<option value="${esc(s)}" ${s===leadFilterSignal?'selected':''}>${esc(s)} only</option>`).join('')}</select>
       <select id="filterLeadStatus"><option value="">All statuses</option>${LEAD_STATUSES.map(s=>`<option value="${esc(s)}" ${s===leadFilterStatus?'selected':''}>${esc(s)}</option>`).join('')}</select>
     </div>
     <div class="table-wrap">

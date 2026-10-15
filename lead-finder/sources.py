@@ -131,7 +131,7 @@ def fetch_reddit():
 
 def fetch_google_news():
     items = []
-    for query, assumed_location in GOOGLE_NEWS_QUERIES:
+    for query in GOOGLE_NEWS_QUERIES:
         url = (
             "https://news.google.com/rss/search?q="
             f"{urllib.parse.quote(query + ' when:14d')}&hl=en-US&gl=US&ceid=US:en"
