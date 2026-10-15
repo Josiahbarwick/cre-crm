@@ -64,6 +64,10 @@ def main():
             "keywords_matched": result["keywords_matched"],
             "confidence_score": result["confidence_score"],
             "status": "New",
+            # Always present (even as null) — PostgREST's bulk insert
+            # requires every row in a batch to have identical keys.
+            "contact_phone": None,
+            "contact_website": None,
         })
 
     print(f"{len(rows)} of {len(raw_items)} items scored as relevant leads.")
