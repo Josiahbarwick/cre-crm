@@ -6,7 +6,7 @@ let currentUser = null;
 function currentUserEmail(){ return (currentUser && currentUser.email) || ''; }
 function currentUserId(){ return currentUser && currentUser.id; }
 
-let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[], meetings:[], poolGames:[], leads:[] };
+let state = { contacts:[], deals:[], calls:[], activities:[], listings:[], listingInterests:[], todos:[], goals:[], marketComps:[], meetings:[], poolGames:[], leads:[], buyerProfiles:[] };
 
 /* ---------- row <-> app object mappers ---------- */
 function contactFromRow(r){
@@ -86,6 +86,22 @@ function leadToRow(l){
     status:l.status||'New', contact_id:l.contactId||null, notes:l.notes||null, owner_email:l.ownerEmail||null,
     contact_phone:l.contactPhone||null, contact_website:l.contactWebsite||null };
 }
+function buyerProfileFromRow(r){
+  return { id:r.id, contactId:r.contact_id||null, label:r.label||'', industries:r.industries||[],
+    minPrice:r.min_price, maxPrice:r.max_price, minRevenue:r.min_revenue, maxRevenue:r.max_revenue,
+    minCashFlow:r.min_cash_flow, maxCashFlow:r.max_cash_flow, locations:r.locations||'',
+    realEstatePreference:r.real_estate_preference||'Any', status:r.status||'Active', notes:r.notes||'',
+    ownerEmail:r.owner_email||'', createdAt:r.created_at, updatedAt:r.updated_at };
+}
+function buyerProfileToRow(b){
+  return { contact_id:b.contactId||null, label:b.label, industries:b.industries||[],
+    min_price:numOrNull(b.minPrice), max_price:numOrNull(b.maxPrice), min_revenue:numOrNull(b.minRevenue),
+    max_revenue:numOrNull(b.maxRevenue), min_cash_flow:numOrNull(b.minCashFlow), max_cash_flow:numOrNull(b.maxCashFlow),
+    locations:b.locations||null, real_estate_preference:b.realEstatePreference||'Any', status:b.status||'Active',
+    notes:b.notes||null, owner_email:b.ownerEmail||null };
+}
+function numOrNull(v){ return (v===''||v==null||isNaN(Number(v))) ? null : Number(v); }
+
 function dealFromRow(r){
   return { id:r.id, title:r.title, propertyAddress:r.property_address||'', value:r.value||0,
     commissionPct:r.commission_pct||0, stage:r.stage, closeDate:r.close_date||'', contactId:r.contact_id||null,
@@ -134,6 +150,8 @@ const PLANET_COLORS = ['#5b8def','#e2703a','#3aa655','#c74fc0','#e0b23a','#4fc3c
 const LEAD_SOURCES = ['Reddit','Google News','LinkedIn','Facebook','Referral','Other'];
 const LEAD_SIGNAL_TYPES = ['Buy','Lease','Sell','List for Lease','Buy/Lease','Unclear'];
 const LEAD_STATUSES = ['New','Reviewed','Contacted','Converted','Dismissed'];
+const REAL_ESTATE_PREFERENCES = ['Required','Preferred','Not Required','Any'];
+const BUYER_PROFILE_STATUSES = ['Active','Paused','Closed'];
 
 /* ---------- helpers ---------- */
 function money(n){
@@ -349,6 +367,10 @@ async function loadAllData(){
   const leadsRes = await supabaseClient.from('leads').select('*').order('created_at',{ascending:false});
   leadsSchemaReady = !leadsRes.error;
   state.leads = leadsSchemaReady ? (leadsRes.data||[]).map(leadFromRow) : [];
+
+  const buyerProfilesRes = await supabaseClient.from('buyer_profiles').select('*').order('created_at',{ascending:false});
+  buyerProfilesSchemaReady = !buyerProfilesRes.error;
+  state.buyerProfiles = buyerProfilesSchemaReady ? (buyerProfilesRes.data||[]).map(buyerProfileFromRow) : [];
   return true;
 }
 let todosGoalsSchemaReady = true;
@@ -357,6 +379,7 @@ let listingsSchemaReady = true;
 let meetingsSchemaReady = true;
 let poolGamesSchemaReady = true;
 let leadsSchemaReady = true;
+let buyerProfilesSchemaReady = true;
 
 async function logActivity(type, description, contactId, dealId){
   const { error } = await supabaseClient.from('activities').insert({
@@ -383,6 +406,7 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'meetings' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'pool_games' }, onRemoteChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'leads' }, onRemoteChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'buyer_profiles' }, onRemoteChange)
     .subscribe();
 }
 function onRemoteChange(){
@@ -513,7 +537,7 @@ function openCsvImportModal(rows){
 }
 
 /* ---------- routing ---------- */
-const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, commissions: renderCommissions, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, pool: renderPool, activity: renderActivity, leads: renderLeads };
+const routes = { dashboard: renderDashboard, prospects: renderProspects, coldcall: renderColdCall, deals: renderDeals, commissions: renderCommissions, listings: renderListings, goals: renderGoals, news: renderNews, individuals: renderIndividuals, pool: renderPool, activity: renderActivity, leads: renderLeads, buyers: renderBuyers };
 let coldCallActiveId = null;
 let currentSearch = '';
 
@@ -3192,20 +3216,16 @@ function leadCardHtml(l){
   `;
 }
 
-function renderLeadsTable(){
-  const body = document.getElementById('leadsBody');
-  if(!body) return;
-  const list = filteredLeads();
-  body.innerHTML = list.length ? list.map(leadCardHtml).join('') :
-    `<div class="empty">No leads here yet. Run the lead-finder script (see <code>lead-finder/README.md</code>) or add one manually.</div>`;
-  body.querySelectorAll('.lead-card[data-id]').forEach(card=>{
+function wireLeadCards(container, onChange){
+  const refresh = onChange || renderLeads;
+  container.querySelectorAll('.lead-card[data-id]').forEach(card=>{
     const id = card.dataset.id;
     const lead = state.leads.find(l=>l.id===id);
     card.querySelector('.leadStatusSelect').onchange = async e=>{
       const { error } = await supabaseClient.from('leads').update({ status:e.target.value }).eq('id', id);
       if(error){ toast('Update failed: '+error.message); return; }
       await loadAllData();
-      renderLeads();
+      refresh();
     };
     card.querySelector('.editLeadBtn').onclick = ()=>openLeadModal(lead);
     const convertBtn = card.querySelector('.convertLeadBtn');
@@ -3216,10 +3236,19 @@ function renderLeadsTable(){
         if(error){ toast('Delete failed: '+error.message); return; }
         await loadAllData();
         toast('Lead deleted');
-        renderLeads();
+        refresh();
       }
     };
   });
+}
+
+function renderLeadsTable(){
+  const body = document.getElementById('leadsBody');
+  if(!body) return;
+  const list = filteredLeads();
+  body.innerHTML = list.length ? list.map(leadCardHtml).join('') :
+    `<div class="empty">No leads here yet. Run the lead-finder script (see <code>lead-finder/README.md</code>) or add one manually.</div>`;
+  wireLeadCards(body, renderLeads);
 }
 
 function openLeadModal(lead, prefill){
@@ -3349,6 +3378,206 @@ function openConvertLeadModal(lead){
     toast('Contact added from lead');
     close();
     if(document.getElementById('leadsBody')) renderLeads();
+  };
+}
+
+/* ---------- Buyer Criteria ---------- */
+function moneyRangeLabel(min, max){
+  if(min==null && max==null) return null;
+  if(min!=null && max!=null) return `${fullMoney(min)} – ${fullMoney(max)}`;
+  if(min!=null) return `${fullMoney(min)}+`;
+  return `Up to ${fullMoney(max)}`;
+}
+
+function matchingLeadsForProfile(profile){
+  return state.leads.filter(l=>{
+    if(!l.signalType || !l.signalType.includes('Sell')) return false;
+    if(profile.industries && profile.industries.length && !profile.industries.includes(l.propertyTypeGuess)) return false;
+    if(profile.locations && profile.locations.trim()){
+      const targets = profile.locations.toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
+      const leadLoc = (l.locationText||'').toLowerCase();
+      if(targets.length && !targets.some(t=> leadLoc.includes(t) || (leadLoc && t.includes(leadLoc)))) return false;
+    }
+    return true;
+  }).sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt));
+}
+
+const BUYER_STATUS_BADGE_CLASS = { Active:'hot', Paused:'warm', Closed:'dead' };
+
+function renderBuyers(){
+  const view = document.getElementById('view');
+  view.className = 'view';
+  if(!buyerProfilesSchemaReady){
+    view.innerHTML = `<div class="page-head"><div><h1>Buyer Criteria</h1></div></div>
+      <div class="panel"><div class="panel-body"><div class="empty">Run <code>schema_v13.sql</code> in your Supabase project's SQL editor to enable Buyer Criteria, then reload.</div></div></div>`;
+    return;
+  }
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Buyer Criteria</h1><p>Buy-box profiles for clients looking to acquire a business — matched against Sell signals in the Lead Finder</p></div>
+      <button class="btn gold" id="addBuyerBtn">+ Add Buyer Profile</button>
+    </div>
+    <div id="buyerProfilesBody"></div>
+  `;
+  document.getElementById('addBuyerBtn').onclick = ()=>openBuyerProfileModal();
+  renderBuyerProfilesList();
+}
+
+function buyerProfileCardHtml(b){
+  const contact = b.contactId ? contactById(b.contactId) : null;
+  const matches = matchingLeadsForProfile(b);
+  const priceLabel = moneyRangeLabel(b.minPrice, b.maxPrice);
+  const revenueLabel = moneyRangeLabel(b.minRevenue, b.maxRevenue);
+  const cashFlowLabel = moneyRangeLabel(b.minCashFlow, b.maxCashFlow);
+  return `
+    <div class="panel" style="margin-bottom:14px;" data-id="${b.id}">
+      <div class="panel-head">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <h3 style="margin:0;">${esc(b.label)}</h3>
+            <span class="badge ${BUYER_STATUS_BADGE_CLASS[b.status]||'dead'}">${esc(b.status)}</span>
+          </div>
+          <div class="cell-sub" style="margin-top:4px;">${contact? `Buyer: ${esc(contact.name)}${contact.phone?' · '+esc(contact.phone):''}` : 'No contact linked yet'}</div>
+        </div>
+        <div class="actions-cell">
+          <button class="icon-btn editBuyerBtn" title="Edit"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></button>
+          <button class="icon-btn delBuyerBtn" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/></svg></button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="view-detail-grid" style="margin-bottom:${b.notes?12:0}px;">
+          <div><div class="ik">Industries</div><div class="iv">${b.industries&&b.industries.length? esc(b.industries.join(', ')) : 'Any'}</div></div>
+          <div><div class="ik">Locations</div><div class="iv">${esc(b.locations||'Anywhere in WI')}</div></div>
+          <div><div class="ik">Price</div><div class="iv">${priceLabel? esc(priceLabel) : '—'}</div></div>
+          <div><div class="ik">Revenue</div><div class="iv">${revenueLabel? esc(revenueLabel) : '—'}</div></div>
+          <div><div class="ik">Cash Flow / SDE</div><div class="iv">${cashFlowLabel? esc(cashFlowLabel) : '—'}</div></div>
+          <div><div class="ik">Real Estate</div><div class="iv">${esc(b.realEstatePreference)}</div></div>
+        </div>
+        ${b.notes? `<p class="cell-sub" style="margin:0 0 12px;">${esc(b.notes)}</p>` : ''}
+        <button class="btn outline sm viewMatchesBtn">View ${matches.length} Matching Lead${matches.length===1?'':'s'}</button>
+        <div class="buyer-matches" style="display:none;margin-top:12px;"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderBuyerProfilesList(){
+  const body = document.getElementById('buyerProfilesBody');
+  if(!body) return;
+  const list = state.buyerProfiles;
+  body.innerHTML = list.length ? list.map(buyerProfileCardHtml).join('') :
+    `<div class="panel"><div class="panel-body"><div class="empty">No buyer profiles yet. Add one to start matching against Sell signals in the Lead Finder.</div></div></div>`;
+  body.querySelectorAll('.panel[data-id]').forEach(card=>{
+    const id = card.dataset.id;
+    const profile = state.buyerProfiles.find(b=>b.id===id);
+    card.querySelector('.editBuyerBtn').onclick = ()=>openBuyerProfileModal(profile);
+    card.querySelector('.delBuyerBtn').onclick = async ()=>{
+      if(confirm('Delete this buyer profile?')){
+        const { error } = await supabaseClient.from('buyer_profiles').delete().eq('id', id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData();
+        toast('Buyer profile deleted');
+        renderBuyers();
+      }
+    };
+    const matchesBox = card.querySelector('.buyer-matches');
+    const viewBtn = card.querySelector('.viewMatchesBtn');
+    viewBtn.onclick = ()=>{
+      const showing = matchesBox.style.display !== 'none';
+      if(showing){ matchesBox.style.display = 'none'; return; }
+      const matches = matchingLeadsForProfile(profile);
+      matchesBox.innerHTML = matches.length
+        ? `<div class="lead-cards">${matches.map(leadCardHtml).join('')}</div>`
+        : `<div class="empty">No leads currently match this buy-box. Matching is best-effort — based on signal type, industry guess, and location text from what the Lead Finder has found.</div>`;
+      matchesBox.style.display = '';
+      if(matches.length) wireLeadCards(matchesBox, renderBuyers);
+    };
+  });
+}
+
+function openBuyerProfileModal(profile){
+  const isEdit = !!profile;
+  const b = profile || { contactId:null, label:'', industries:[], minPrice:'', maxPrice:'', minRevenue:'', maxRevenue:'', minCashFlow:'', maxCashFlow:'', locations:'', realEstatePreference:'Any', status:'Active', notes:'' };
+  const html = `
+    <div class="modal-overlay">
+      <div class="modal" style="width:620px;">
+        <div class="modal-head"><h3>${isEdit?'Edit Buyer Profile':'Add Buyer Profile'}</h3><button class="modal-close">&times;</button></div>
+        <div class="modal-body">
+          <p class="cell-sub" style="margin-top:0;">Matching against leads is best-effort (signal type, industry guess, and location text) — the Lead Finder doesn't have structured financials, so always verify a match's numbers yourself before pitching it.</p>
+          <div class="form-grid">
+            <label class="full">Label<input type="text" id="bp_label" value="${esc(b.label)}" placeholder="e.g. John Smith — Hospitality Acquisition"></label>
+            <label>Linked Contact<select id="bp_contact"><option value="">— None —</option>${state.contacts.map(c=>`<option value="${c.id}" ${c.id===b.contactId?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label>
+            <label>Status<select id="bp_status">${BUYER_PROFILE_STATUSES.map(s=>`<option ${s===b.status?'selected':''}>${s}</option>`).join('')}</select></label>
+            <label class="full">Industries (ctrl/cmd-click to select multiple, or none for any)
+              <select id="bp_industries" multiple size="5">${PROPERTY_TYPES.map(t=>`<option value="${esc(t)}" ${(b.industries||[]).includes(t)?'selected':''}>${esc(t)}</option>`).join('')}</select>
+            </label>
+            <label class="full">Target Locations<input type="text" id="bp_locations" value="${esc(b.locations)}" placeholder="e.g. Milwaukee, Waukesha, Appleton — comma separated, blank = anywhere in WI"></label>
+            <label>Min Price<input type="number" id="bp_minprice" value="${b.minPrice??''}" placeholder="250000"></label>
+            <label>Max Price<input type="number" id="bp_maxprice" value="${b.maxPrice??''}" placeholder="2000000"></label>
+            <label>Min Annual Revenue<input type="number" id="bp_minrev" value="${b.minRevenue??''}" placeholder="500000"></label>
+            <label>Max Annual Revenue<input type="number" id="bp_maxrev" value="${b.maxRevenue??''}" placeholder="5000000"></label>
+            <label>Min Cash Flow / SDE<input type="number" id="bp_mincf" value="${b.minCashFlow??''}" placeholder="100000"></label>
+            <label>Max Cash Flow / SDE<input type="number" id="bp_maxcf" value="${b.maxCashFlow??''}" placeholder="800000"></label>
+            <label>Real Estate<select id="bp_re">${REAL_ESTATE_PREFERENCES.map(s=>`<option ${s===b.realEstatePreference?'selected':''}>${s}</option>`).join('')}</select></label>
+            <label class="full">Notes<textarea id="bp_notes" placeholder="Anything else about what they're looking for…">${esc(b.notes)}</textarea></label>
+          </div>
+        </div>
+        <div class="modal-foot">
+          ${isEdit? '<button class="btn danger" id="deleteBuyerBtn" style="margin-right:auto;">Delete</button>':''}
+          <button class="btn outline" id="cancelBtn">Cancel</button>
+          <button class="btn gold" id="saveBuyerBtn">${isEdit?'Save Changes':'Add Buyer Profile'}</button>
+        </div>
+      </div>
+    </div>`;
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = html;
+  const close = ()=>root.innerHTML='';
+  root.querySelector('.modal-close').onclick = close;
+  root.querySelector('#cancelBtn').onclick = close;
+  root.querySelector('.modal-overlay').addEventListener('click', e=>{ if(e.target.classList.contains('modal-overlay')) close(); });
+  if(isEdit){
+    root.querySelector('#deleteBuyerBtn').onclick = async ()=>{
+      if(confirm('Delete this buyer profile?')){
+        const { error } = await supabaseClient.from('buyer_profiles').delete().eq('id', b.id);
+        if(error){ toast('Delete failed: '+error.message); return; }
+        await loadAllData(); toast('Buyer profile deleted'); close(); renderBuyers();
+      }
+    };
+  }
+  root.querySelector('#saveBuyerBtn').onclick = async ()=>{
+    const label = document.getElementById('bp_label').value.trim();
+    if(!label){ toast('Label is required'); return; }
+    const industries = Array.from(document.getElementById('bp_industries').selectedOptions).map(o=>o.value);
+    const data = {
+      label,
+      contactId: document.getElementById('bp_contact').value || null,
+      status: document.getElementById('bp_status').value,
+      industries,
+      locations: document.getElementById('bp_locations').value.trim(),
+      minPrice: document.getElementById('bp_minprice').value,
+      maxPrice: document.getElementById('bp_maxprice').value,
+      minRevenue: document.getElementById('bp_minrev').value,
+      maxRevenue: document.getElementById('bp_maxrev').value,
+      minCashFlow: document.getElementById('bp_mincf').value,
+      maxCashFlow: document.getElementById('bp_maxcf').value,
+      realEstatePreference: document.getElementById('bp_re').value,
+      notes: document.getElementById('bp_notes').value.trim(),
+    };
+    const btn = document.getElementById('saveBuyerBtn');
+    btn.disabled = true;
+    if(isEdit){
+      const { error } = await supabaseClient.from('buyer_profiles').update(buyerProfileToRow({ ...b, ...data })).eq('id', b.id);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      toast('Buyer profile updated');
+    } else {
+      const row = buyerProfileToRow({ ...data, ownerEmail: currentUserEmail() });
+      const { error } = await supabaseClient.from('buyer_profiles').insert(row);
+      if(error){ toast('Save failed: '+error.message); btn.disabled=false; return; }
+      toast('Buyer profile added');
+    }
+    await loadAllData();
+    close();
+    if(document.getElementById('buyerProfilesBody')) renderBuyers();
   };
 }
 
